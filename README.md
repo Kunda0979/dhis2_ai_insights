@@ -129,6 +129,17 @@ You must run `yarn build` before running `yarn deploy`.
    - **Ollama**: Configure server URL and select installed model
 4. Save your settings
 
+### Azure OpenAI Configuration
+
+Use these settings in the app when selecting **Azure OpenAI** as your provider:
+
+- API Key: Your Azure OpenAI API key
+- Resource Name: Your Azure OpenAI resource name (for example, `my-azure-openai-resource`)
+- Deployment Name: Your deployed model name in Azure (for example, `gpt-4`)
+- API Version: Recommended default `2023-12-01-preview` unless your Azure setup requires another version
+
+After saving, use the built-in connection test in Settings before starting analysis.
+
 ### Data Selection
 
 1. Go to the "Data Selection" tab
