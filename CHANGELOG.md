@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Added an Azure OpenAI configuration section to README with required fields and setup guidance.
+
 ## [1.0.9] - 2025-05-12
 
 ### Added
