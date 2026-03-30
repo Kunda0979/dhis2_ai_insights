@@ -31,6 +31,11 @@ export const SettingsPanel = ({ onClose, engine }) => {
   // AI Provider selection
   const [aiProvider, setAIProvider] = useState('openai')
   
+  // Azure OpenAI settings
+  const [azureResourceName, setAzureResourceName] = useState('')
+  const [azureDeploymentName, setAzureDeploymentName] = useState('')
+  const [azureApiVersion, setAzureApiVersion] = useState('2023-12-01-preview')
+
   // Ollama settings
   const [ollamaServerUrl, setOllamaServerUrl] = useState('http://localhost:11434')
   const [ollamaModel, setOllamaModel] = useState('llama3')
@@ -62,6 +67,9 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setAIProvider(settings.aiProvider || 'openai')
       setOllamaServerUrl(settings.ollamaServerUrl || 'http://localhost:11434')
       setOllamaModel(settings.ollamaModel || 'llama3')
+      setAzureResourceName(settings.azureResourceName || '')
+      setAzureDeploymentName(settings.azureDeploymentName || '')
+      setAzureApiVersion(settings.azureApiVersion || '2023-12-01-preview')
     }
   }, [])
 
@@ -98,30 +106,20 @@ export const SettingsPanel = ({ onClose, engine }) => {
     }
   }
   
-  const handleTestOllamaConnection = async () => {
+  const handleTestAzureOpenAIConnection = async () => {
     setTestingConnection(true)
     setTestResult(null)
     
     try {
-      const result = await testAIConnection({ serverUrl: ollamaServerUrl }, 'ollama')
-      
-      // Store available models for selection
-      if (result.models && result.models.length > 0) {
-        setAvailableOllamaModels(result.models)
-        
-        // If current model isn't in the list, select the first available one
-        if (!result.models.includes(ollamaModel) && result.models.length > 0) {
-          setOllamaModel(result.models[0])
-        }
-      }
-      
+      const result = await testAIConnection({
+        apiKey,
+        resourceName: azureResourceName,
+        deploymentName: azureDeploymentName,
+        apiVersion: azureApiVersion
+      }, 'azure-openai')
       setTestResult({
         success: true,
-        message: `Successfully connected to Ollama server. ${
-          result.models.length 
-            ? `Available models: ${result.models.join(', ')}`
-            : 'No models found. Please make sure you have models available on your Ollama server.'
-        }`
+        message: 'Successfully connected to Azure OpenAI API'
       })
     } catch (error) {
       setTestResult({
@@ -148,6 +146,11 @@ export const SettingsPanel = ({ onClose, engine }) => {
     } else if (aiProvider === 'ollama') {
       settings.ollamaServerUrl = ollamaServerUrl
       settings.ollamaModel = ollamaModel
+    } else if (aiProvider === 'azure-openai') {
+      settings.azureResourceName = azureResourceName
+      settings.azureDeploymentName = azureDeploymentName
+      settings.azureApiVersion = azureApiVersion
+      settings.temperature = temperature
     }
     
     saveSettings(settings)
@@ -172,6 +175,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
               className="selector-field"
             >
               <SingleSelectOption value="openai" label="OpenAI API (GPT-4, etc.)" />
+              <SingleSelectOption value="azure-openai" label="Azure OpenAI" />
               <SingleSelectOption value="ollama" label="Ollama (Local or Remote)" />
             </SingleSelectField>
           </div>
@@ -209,6 +213,77 @@ export const SettingsPanel = ({ onClose, engine }) => {
                     </Button>
                   </ButtonStrip>
                 </Box>
+              </div>
+            </>
+          ) : aiProvider === 'azure-openai' ? (
+            <>
+              <h3>Azure OpenAI Configuration</h3>
+              <p>
+                Configure your Azure OpenAI resource settings. You need your Azure OpenAI resource name,
+                deployment name, and API key.
+              </p>
+              
+              <div className="settings-field">
+                <InputField
+                  label="Azure OpenAI API Key"
+                  type={apiKeyMasked ? 'password' : 'text'}
+                  value={apiKey}
+                  onChange={({ value }) => setApiKey(value)}
+                  placeholder="your-azure-openai-api-key"
+                  helpText="Your Azure OpenAI API key will be stored securely in your browser's local storage."
+                />
+                <Box margin="8px 0">
+                  <Switch
+                    label="Show API key"
+                    checked={!apiKeyMasked}
+                    onChange={() => setApiKeyMasked(!apiKeyMasked)}
+                  />
+                </Box>
+                <Box margin="16px 0">
+                  <ButtonStrip>
+                    <Button primary onClick={handleSaveApiKey}>Save API Key</Button>
+                    <Button destructive onClick={handleClearApiKey}>Clear API Key</Button>
+                    <Button 
+                      onClick={handleTestAzureOpenAIConnection} 
+                      disabled={!apiKey || !azureResourceName || !azureDeploymentName || testingConnection}
+                    >
+                      {testingConnection ? 'Testing...' : 'Test Connection'}
+                    </Button>
+                  </ButtonStrip>
+                </Box>
+              </div>
+              
+              <div className="settings-field">
+                <InputField
+                  label="Resource Name"
+                  type="text"
+                  value={azureResourceName}
+                  onChange={({ value }) => setAzureResourceName(value)}
+                  placeholder="your-resource-name"
+                  helpText="The name of your Azure OpenAI resource (found in the Azure portal)."
+                />
+              </div>
+              
+              <div className="settings-field">
+                <InputField
+                  label="Deployment Name"
+                  type="text"
+                  value={azureDeploymentName}
+                  onChange={({ value }) => setAzureDeploymentName(value)}
+                  placeholder="gpt-4"
+                  helpText="The name of your model deployment in Azure OpenAI."
+                />
+              </div>
+              
+              <div className="settings-field">
+                <InputField
+                  label="API Version"
+                  type="text"
+                  value={azureApiVersion}
+                  onChange={({ value }) => setAzureApiVersion(value)}
+                  placeholder="2023-12-01-preview"
+                  helpText="The API version to use (default: 2023-12-01-preview)."
+                />
               </div>
             </>
           ) : (
@@ -284,7 +359,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
           {testingConnection && (
             <Box margin="16px 0">
               <CircularLoader small />
-              <span style={{ marginLeft: '8px' }}>Testing connection to {aiProvider === 'openai' ? 'OpenAI' : 'Ollama'}...</span>
+              <span style={{ marginLeft: '8px' }}>Testing connection to {aiProvider === 'openai' ? 'OpenAI' : aiProvider === 'azure-openai' ? 'Azure OpenAI' : 'Ollama'}...</span>
             </Box>
           )}
           
@@ -314,17 +389,8 @@ export const SettingsPanel = ({ onClose, engine }) => {
             <>
               <h3>AI Model Settings</h3>
               
-              {aiProvider === 'openai' && (
+              {aiProvider === 'openai' || aiProvider === 'azure-openai' ? (
                 <>
-                  <div className="settings-field">
-                    <InputField
-                      label="Model"
-                      value={model}
-                      onChange={({ value }) => setModel(value)}
-                      helpText="The OpenAI model to use for queries."
-                    />
-                  </div>
-                  
                   <div className="settings-field">
                     <InputField
                       label="Temperature"
@@ -338,7 +404,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                     />
                   </div>
                 </>
-              )}
+              ) : null}
               
               <div className="settings-field">
                 <InputField

@@ -18,7 +18,7 @@ import { AIQuerySelection } from './components/AIQuerySelection.jsx'
 import { SettingsPanel } from './components/SettingsPanel.jsx'
 import { DataDashboard } from './components/DataDashboard.jsx'
 import { DatasetSelector } from './components/DatasetSelector.jsx'
-import { getApiKeyFromStorage, isApiKeySet, getSettings } from './utils/storage'
+import { isApiKeySet, getSettings } from './utils/storage'
 
 // Query to retrieve current user's info and check connection
 const userQuery = {
@@ -27,7 +27,7 @@ const userQuery = {
   },
 }
 
-const App = () => {
+const MainApp = () => {
   const engine = useDataEngine()
   const { loading, error, data } = useDataQuery(userQuery)
   const [activeTab, setActiveTab] = useState('data_selection')
@@ -46,6 +46,10 @@ const App = () => {
     const settings = getSettings() || {}
     const isConfigured =
       (settings.aiProvider === 'openai' && isApiKeySet()) ||
+      (settings.aiProvider === 'azure-openai' &&
+        isApiKeySet() &&
+        settings.azureResourceName &&
+        settings.azureDeploymentName) ||
       (settings.aiProvider === 'ollama' && settings.ollamaServerUrl && settings.ollamaModel)
 
     setApiKeySet(isConfigured)
@@ -223,6 +227,30 @@ const App = () => {
       )}
     </div>
   )
+}
+
+const DevSettingsPreview = () => {
+  return (
+    <div className="app-container">
+      <NoticeBox title="Developer Preview Mode" info>
+        Running in localhost settings preview. DHIS2 authentication is bypassed so you can verify provider options.
+      </NoticeBox>
+      <SettingsPanel onClose={() => {}} engine={null} />
+    </div>
+  )
+}
+
+const App = () => {
+  const isDevSettingsPreview =
+    typeof window !== 'undefined' &&
+    window.location.hostname === 'localhost' &&
+    new URLSearchParams(window.location.search).get('preview') === 'settings'
+
+  if (isDevSettingsPreview) {
+    return <DevSettingsPreview />
+  }
+
+  return <MainApp />
 }
 
 export default App

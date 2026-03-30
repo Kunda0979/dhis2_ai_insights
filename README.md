@@ -30,6 +30,7 @@ This application connects directly to your DHIS2 instance and uses AI to help yo
 
 ### 🌐 Flexible AI Providers
 - **OpenAI Integration**: Use GPT-4 and other OpenAI models with your API key
+- **Azure OpenAI Integration**: Connect to Azure OpenAI deployments for enterprise use
 - **Local Ollama Support**: Deploy locally with Ollama for offline use and complete data privacy
 - **Network Proxy**: Included proxy server for network-restricted environments
 - Configure models, temperature, and token limits to suit your needs
@@ -124,6 +125,7 @@ You must run `yarn build` before running `yarn deploy`.
 2. Navigate to the Settings panel by clicking the "Settings" button
 3. Choose your AI provider:
    - **OpenAI**: Enter your API key and select model
+   - **Azure OpenAI**: Enter your API key, resource name, deployment name, and API version
    - **Ollama**: Configure server URL and select installed model
 4. Save your settings
 

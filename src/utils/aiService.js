@@ -1,9 +1,5 @@
-import { sendToOpenAI } from './openai'
-import { sendToOllama } from './ollama'
-import { getSettings } from './storage'
-
 /**
- * Sends a query to the configured AI provider (OpenAI or Ollama)
+ * Sends a query to the configured AI provider (OpenAI, Azure OpenAI, or Ollama)
  * @param {string} query - The user's query
  * @param {Object} data - The DHIS2 data to analyze
  * @param {Object} context - Additional context information
@@ -14,12 +10,17 @@ import { getSettings } from './storage'
 export const sendToAI = async (query, data, context, conversation = [], onStreamChunk = null) => {
   const settings = getSettings() || {}
   const aiProvider = settings.aiProvider || 'openai'
-  
+
   // Based on the configured provider, send to appropriate service
   if (aiProvider === 'ollama') {
+    const { sendToOllama } = await import('./ollama')
     return sendToOllama(query, data, context, conversation, onStreamChunk)
+  } else if (aiProvider === 'azure-openai') {
+    const { sendToAzureOpenAI } = await import('./azureOpenAI')
+    return sendToAzureOpenAI(query, data, context, conversation, onStreamChunk)
   } else {
     // Default to OpenAI
+    const { sendToOpenAI } = await import('./openai')
     return sendToOpenAI(query, data, context, conversation, onStreamChunk)
   }
 }
@@ -44,6 +45,10 @@ export const testAIConnection = async (options, provider) => {
     // Import dynamically to avoid circular dependencies
     const { testOllamaConnection } = await import('./ollama')
     return testOllamaConnection(options.serverUrl)
+  } else if (provider === 'azure-openai') {
+    // Import dynamically to avoid circular dependencies
+    const { testAzureOpenAIConnection } = await import('./azureOpenAI')
+    return testAzureOpenAIConnection(options)
   } else {
     throw new Error(`Unknown AI provider: ${provider}`)
   }
