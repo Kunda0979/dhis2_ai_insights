@@ -185,7 +185,7 @@ If you're using Ollama for local AI processing:
    npm install
    npm start
    ```
-   Then configure the app to use http://localhost:3000 as server URL
+   Then configure the app to use http://localhost:3001 as server URL
 
 ### Best Practices for AI Queries
 

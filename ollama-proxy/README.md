@@ -24,14 +24,14 @@ npm start
 
 3. In your DHIS2 AI Insights app settings:
    - Select Ollama as the AI provider
-   - Use `http://localhost:3000` as the Ollama server URL
+   - Use `http://localhost:3001` as the Ollama server URL
    - Click "Connect" to test the connection and show available models
    - Select your preferred model
    - Save settings
 
 ## Configuration
 
-By default, the proxy runs on port 3000 and forwards requests to `http://localhost:11434`.
+By default, the proxy runs on port 3001 and forwards requests to `http://localhost:11434`.
 
 You can change the port by setting the PORT environment variable:
 ```bash

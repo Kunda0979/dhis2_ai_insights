@@ -3,7 +3,7 @@ const cors = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const TIMEOUT = parseInt(process.env.TIMEOUT || '120000', 10); // 120 seconds default timeout, configurable via env
 
 // Enable CORS for all routes
