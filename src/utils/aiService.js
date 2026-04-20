@@ -1,3 +1,5 @@
+import { getSettings } from './storage'
+
 /**
  * Sends a query to the configured AI provider (OpenAI, Azure OpenAI, or Ollama)
  * @param {string} query - The user's query
