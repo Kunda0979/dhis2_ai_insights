@@ -71,6 +71,14 @@ export const getAIInfo = () => {
       temperature: settings.temperature || 0.7,
       maxTokens: settings.maxTokens || 2000
     }
+  } else if (aiProvider === 'azure-openai') {
+    return {
+      provider: 'azure-openai',
+      model: settings.azureDeploymentName || 'deployment-not-set',
+      resourceName: settings.azureResourceName || null,
+      apiVersion: settings.azureApiVersion || '2024-02-15-preview',
+      maxTokens: settings.maxTokens || 2000
+    }
   } else if (aiProvider === 'ollama') {
     return {
       provider: 'ollama',
@@ -79,8 +87,9 @@ export const getAIInfo = () => {
       maxTokens: settings.maxTokens || 2000
     }
   }
-  
+
   return {
-    provider: 'unknown'
+    provider: 'unknown',
+    model: 'not-configured'
   }
 }

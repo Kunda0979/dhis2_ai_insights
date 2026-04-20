@@ -421,7 +421,14 @@ export const AIQuerySelection = ({
             {aiInfo && (
               <span style={{
                 fontSize: '12px',
-                backgroundColor: aiInfo.provider === 'openai' ? '#10a37f' : '#ff6700',
+                backgroundColor:
+                  aiInfo.provider === 'openai'
+                    ? '#10a37f'
+                    : aiInfo.provider === 'azure-openai'
+                      ? '#0078d4'
+                      : aiInfo.provider === 'ollama'
+                        ? '#ff6700'
+                        : '#6b7280',
                 color: 'white',
                 padding: '2px 6px',
                 borderRadius: '10px',
@@ -429,7 +436,11 @@ export const AIQuerySelection = ({
               }}>
                 {aiInfo.provider === 'openai'
                   ? `OpenAI: ${aiInfo.model}`
-                  : `Ollama: ${aiInfo.model}`}
+                  : aiInfo.provider === 'azure-openai'
+                    ? `Azure OpenAI: ${aiInfo.model}`
+                    : aiInfo.provider === 'ollama'
+                      ? `Ollama: ${aiInfo.model}`
+                      : `AI: ${aiInfo.model || 'not-configured'}`}
               </span>
             )}
           </div>
