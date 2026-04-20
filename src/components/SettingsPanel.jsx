@@ -176,6 +176,11 @@ export const SettingsPanel = ({ onClose, engine }) => {
       settings.temperature = temperature
     }
     
+    // Save API key if configured
+    if (apiKey && apiKey.trim()) {
+      saveApiKey(apiKey.trim())
+    }
+    
     saveSettings(settings)
     onClose()
   }
