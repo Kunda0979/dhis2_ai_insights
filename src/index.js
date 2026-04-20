@@ -11,12 +11,11 @@ const storedBaseUrl =
     ? window.localStorage.getItem('DHIS2_BASE_URL') || null
     : null
 
-const forwardedBaseUrl =
-  typeof window !== 'undefined' && window.location.hostname.endsWith('.app.github.dev')
-    ? storedBaseUrl
-    : null
+const isLocalhostRuntime =
+  typeof window !== 'undefined' &&
+  window.location.hostname === 'localhost'
 
-const authBaseUrl = forwardedBaseUrl || storedBaseUrl
+const authBaseUrl = isLocalhostRuntime ? storedBaseUrl : null
 
 if (typeof window !== 'undefined' && !window.__dhis2PatchedFetch) {
   const originalFetch = window.fetch.bind(window)
@@ -47,7 +46,9 @@ if (typeof window !== 'undefined' && !window.__dhis2PatchedFetch) {
 }
 
 const appConfig = {
-  baseUrl: authBaseUrl || process.env.REACT_APP_DHIS2_BASE_URL || '../../../',
+  baseUrl: isLocalhostRuntime
+    ? authBaseUrl || process.env.REACT_APP_DHIS2_BASE_URL || '../../../'
+    : process.env.REACT_APP_DHIS2_BASE_URL || '../../../',
   apiVersion: process.env.REACT_APP_DHIS2_API_VERSION || '38',
 }
 
@@ -66,14 +67,9 @@ const hasBasicAuth =
   typeof window !== 'undefined' &&
   Boolean(window.sessionStorage.getItem('DHIS2_BASIC_AUTH'))
 
-const isExternalDevRuntime =
-  typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' ||
-    window.location.hostname.endsWith('.app.github.dev'))
-
 const hasConfiguredBaseUrl = Boolean(appConfig.baseUrl && appConfig.baseUrl !== '../../../')
 const needsDevBootstrap =
-  isExternalDevRuntime && !isDevSettingsPreview && !isDevStandalonePreview &&
+  isLocalhostRuntime && !isDevSettingsPreview && !isDevStandalonePreview &&
   (!hasConfiguredBaseUrl || !hasBasicAuth)
 
 const DevLoginBootstrap = () => {
