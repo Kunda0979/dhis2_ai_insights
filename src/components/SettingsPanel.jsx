@@ -34,7 +34,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
   // Azure OpenAI settings
   const [azureResourceName, setAzureResourceName] = useState('')
   const [azureDeploymentName, setAzureDeploymentName] = useState('')
-  const [azureApiVersion, setAzureApiVersion] = useState('2023-12-01-preview')
+  const [azureApiVersion, setAzureApiVersion] = useState('2024-02-15-preview')
 
   // Ollama settings
   const [ollamaServerUrl, setOllamaServerUrl] = useState('http://localhost:11434')
@@ -69,7 +69,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setOllamaModel(settings.ollamaModel || 'llama3')
       setAzureResourceName(settings.azureResourceName || '')
       setAzureDeploymentName(settings.azureDeploymentName || '')
-      setAzureApiVersion(settings.azureApiVersion || '2023-12-01-preview')
+      setAzureApiVersion(settings.azureApiVersion || '2024-02-15-preview')
     }
   }, [])
 
@@ -112,10 +112,10 @@ export const SettingsPanel = ({ onClose, engine }) => {
     
     try {
       const result = await testAIConnection({
-        apiKey,
-        resourceName: azureResourceName,
-        deploymentName: azureDeploymentName,
-        apiVersion: azureApiVersion
+        apiKey: apiKey.trim(),
+        resourceName: azureResourceName.trim(),
+        deploymentName: azureDeploymentName.trim(),
+        apiVersion: azureApiVersion.trim()
       }, 'azure-openai')
       setTestResult({
         success: true,
@@ -147,9 +147,9 @@ export const SettingsPanel = ({ onClose, engine }) => {
       settings.ollamaServerUrl = ollamaServerUrl
       settings.ollamaModel = ollamaModel
     } else if (aiProvider === 'azure-openai') {
-      settings.azureResourceName = azureResourceName
-      settings.azureDeploymentName = azureDeploymentName
-      settings.azureApiVersion = azureApiVersion
+      settings.azureResourceName = azureResourceName.trim()
+      settings.azureDeploymentName = azureDeploymentName.trim()
+      settings.azureApiVersion = azureApiVersion.trim()
       settings.temperature = temperature
     }
     
@@ -260,7 +260,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureResourceName}
                   onChange={({ value }) => setAzureResourceName(value)}
                   placeholder="your-resource-name"
-                  helpText="The name of your Azure OpenAI resource (found in the Azure portal)."
+                  helpText="Use either your Azure resource name (for example: my-azure-openai) or a full endpoint URL (for example: https://my-azure-openai.openai.azure.com)."
                 />
               </div>
               
@@ -281,8 +281,8 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   type="text"
                   value={azureApiVersion}
                   onChange={({ value }) => setAzureApiVersion(value)}
-                  placeholder="2023-12-01-preview"
-                  helpText="The API version to use (default: 2023-12-01-preview)."
+                  placeholder="2024-02-15-preview"
+                  helpText="The API version to use (default: 2024-02-15-preview)."
                 />
               </div>
             </>
@@ -302,7 +302,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   <li>Navigate to the <code>ollama-proxy</code> folder in your app files</li>
                   <li>Run <code>npm install</code> to install dependencies</li>
                   <li>Start the proxy with <code>npm start</code></li>
-                  <li>Use <code>http://localhost:3000</code> as the Ollama Server URL in settings</li>
+                  <li>Use <code>http://localhost:3001</code> as the Ollama Server URL in settings</li>
                   <li>For larger models that might time out, you can set a custom timeout:
                     <code>TIMEOUT=120000 node proxy.js</code> (for 120 seconds)</li>
                 </ol>

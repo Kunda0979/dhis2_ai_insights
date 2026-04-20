@@ -1,6 +1,50 @@
 import axios from 'axios'
 import { getApiKeyFromStorage, getSettings } from './storage'
 
+const DEFAULT_AZURE_API_VERSION = '2024-02-15-preview'
+
+const normalizeAzureEndpoint = (resourceInput) => {
+  const raw = (resourceInput || '').trim()
+  if (!raw) {
+    return null
+  }
+
+  // Accept either a full endpoint URL or only the resource name
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const parsed = new URL(raw)
+      return parsed.origin
+    } catch (error) {
+      return null
+    }
+  }
+
+  return `https://${raw}.openai.azure.com`
+}
+
+const toAzureErrorMessage = (error) => {
+  const status = error?.response?.status
+  const apiMessage = error?.response?.data?.error?.message
+
+  if (apiMessage) {
+    return apiMessage
+  }
+
+  if (error?.code === 'ERR_NETWORK') {
+    return 'Network/CORS error while calling Azure OpenAI. Verify endpoint URL, firewall rules, and allowed browser origins.'
+  }
+
+  if (status === 401 || status === 403) {
+    return 'Authentication failed. Verify your Azure OpenAI API key and endpoint.'
+  }
+
+  if (status === 404) {
+    return 'Deployment or endpoint not found. Verify the endpoint/resource name and deployment name.'
+  }
+
+  return error?.message || 'Failed to communicate with Azure OpenAI API. Please check your configuration and try again.'
+}
+
 /**
  * Send a query to Azure OpenAI API
  * @param {string} query - The user's query
@@ -11,21 +55,21 @@ import { getApiKeyFromStorage, getSettings } from './storage'
  * @returns {Object} The AI response
  */
 export const sendToAzureOpenAI = async (query, data, context, conversation = [], onStreamChunk = null) => {
-  const apiKey = getApiKeyFromStorage()
+  const apiKey = (getApiKeyFromStorage() || '').trim()
   if (!apiKey) {
     throw new Error('Azure OpenAI API key not configured')
   }
 
   // Get settings
   const settings = getSettings() || {}
-  const resourceName = settings.azureResourceName
-  const deploymentName = settings.azureDeploymentName
-  const apiVersion = settings.azureApiVersion || '2023-12-01-preview'
+  const endpoint = normalizeAzureEndpoint(settings.azureResourceName)
+  const deploymentName = (settings.azureDeploymentName || '').trim()
+  const apiVersion = (settings.azureApiVersion || DEFAULT_AZURE_API_VERSION).trim()
   const maxTokens = settings.maxTokens || 2000
   const temperature = settings.temperature || 0.7
 
-  if (!resourceName || !deploymentName) {
-    throw new Error('Azure OpenAI resource name and deployment name must be configured')
+  if (!endpoint || !deploymentName) {
+    throw new Error('Azure OpenAI endpoint/resource name and deployment name must be configured')
   }
 
   // Prepare prompt with context and data
@@ -43,7 +87,7 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
   // Add the current query
   messages.push({ role: 'user', content: query })
 
-  const url = `https://${resourceName}.openai.azure.com/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
+  const url = `${endpoint}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
 
   try {
     // If streaming is requested, use fetch API for SSE
@@ -104,10 +148,7 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
       )
     }
 
-    throw new Error(
-      errorMessage ||
-      'Failed to communicate with Azure OpenAI API. Please check your configuration and try again.'
-    )
+    throw new Error(errorMessage || toAzureErrorMessage(error))
   }
 }
 
@@ -208,16 +249,26 @@ const handleStreamingResponse = async (url, requestBody, apiKey, onStreamChunk) 
  * @returns {Object} Test result
  */
 export const testAzureOpenAIConnection = async (options) => {
-  const { apiKey, resourceName, deploymentName, apiVersion = '2023-12-01-preview' } = options
+  const {
+    apiKey,
+    resourceName,
+    deploymentName,
+    apiVersion = DEFAULT_AZURE_API_VERSION,
+  } = options
 
-  if (!apiKey || !resourceName || !deploymentName) {
-    throw new Error('Azure OpenAI API key, resource name, and deployment name are required')
+  const trimmedApiKey = (apiKey || '').trim()
+  const endpoint = normalizeAzureEndpoint(resourceName)
+  const trimmedDeployment = (deploymentName || '').trim()
+  const trimmedVersion = (apiVersion || DEFAULT_AZURE_API_VERSION).trim()
+
+  if (!trimmedApiKey || !endpoint || !trimmedDeployment) {
+    throw new Error('Azure OpenAI API key, endpoint/resource name, and deployment name are required')
   }
 
   try {
-    const url = `https://${resourceName}.openai.azure.com/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
+    const url = `${endpoint}/openai/deployments/${trimmedDeployment}/chat/completions?api-version=${trimmedVersion}`
 
-    const response = await axios.post(
+    await axios.post(
       url,
       {
         messages: [{ role: 'user', content: 'Hello' }],
@@ -228,7 +279,7 @@ export const testAzureOpenAIConnection = async (options) => {
       {
         headers: {
           'Content-Type': 'application/json',
-          'api-key': apiKey
+          'api-key': trimmedApiKey
         }
       }
     )
@@ -239,10 +290,7 @@ export const testAzureOpenAIConnection = async (options) => {
     }
   } catch (error) {
     console.error('Azure OpenAI API Connection Test Error:', error.response?.data || error.message)
-    throw new Error(
-      error.response?.data?.error?.message ||
-      'Failed to connect to Azure OpenAI API. Please check your configuration.'
-    )
+    throw new Error(toAzureErrorMessage(error))
   }
 }
 
