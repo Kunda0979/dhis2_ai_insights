@@ -6,6 +6,8 @@ import { SettingsPanel } from './components/SettingsPanel.jsx'
 
 import './index.css'
 
+const AUTH_STORAGE_KEY = 'DHIS2_BASIC_AUTH'
+
 const storedBaseUrl =
   typeof window !== 'undefined'
     ? window.localStorage.getItem('DHIS2_BASE_URL') || null
@@ -15,19 +17,39 @@ const isLocalhostRuntime =
   typeof window !== 'undefined' &&
   window.location.hostname === 'localhost'
 
+const isCodespacesRuntime =
+  typeof window !== 'undefined' &&
+  (window.location.hostname.endsWith('.github.dev') ||
+    window.location.hostname.endsWith('.app.github.dev'))
+
 const authBaseUrl = isLocalhostRuntime ? storedBaseUrl : null
 
 if (typeof window !== 'undefined' && !window.__dhis2PatchedFetch) {
   const originalFetch = window.fetch.bind(window)
 
   window.fetch = (input, init = {}) => {
-    const basicAuth = window.sessionStorage.getItem('DHIS2_BASIC_AUTH')
+    const basicAuth =
+      window.localStorage.getItem(AUTH_STORAGE_KEY) ||
+      window.sessionStorage.getItem(AUTH_STORAGE_KEY)
     const requestUrl = typeof input === 'string' ? input : input?.url
-    const shouldAttachAuth =
+    let isSameOriginApiRequest = false
+
+    if (requestUrl) {
+      try {
+        const parsedUrl = new URL(requestUrl, window.location.origin)
+        isSameOriginApiRequest =
+          parsedUrl.origin === window.location.origin &&
+          parsedUrl.pathname.startsWith('/api/')
+      } catch (error) {
+        isSameOriginApiRequest = false
+      }
+    }
+
+    const shouldAttachAuth = Boolean(
       basicAuth &&
-      authBaseUrl &&
       requestUrl &&
-      requestUrl.startsWith(authBaseUrl)
+      (isSameOriginApiRequest || (authBaseUrl && requestUrl.startsWith(authBaseUrl)))
+    )
 
     if (!shouldAttachAuth) {
       return originalFetch(input, init)
@@ -65,11 +87,16 @@ const isDevSettingsPreview = isLocalhostPreview && previewMode === 'settings'
 const isDevStandalonePreview = isLocalhostPreview && previewMode === 'standalone'
 const hasBasicAuth =
   typeof window !== 'undefined' &&
-  Boolean(window.sessionStorage.getItem('DHIS2_BASIC_AUTH'))
+  Boolean(
+    window.localStorage.getItem(AUTH_STORAGE_KEY) ||
+      window.sessionStorage.getItem(AUTH_STORAGE_KEY)
+  )
 
 const hasConfiguredBaseUrl = Boolean(appConfig.baseUrl && appConfig.baseUrl !== '../../../')
 const needsDevBootstrap =
-  isLocalhostRuntime && !isDevSettingsPreview && !isDevStandalonePreview &&
+  (isLocalhostRuntime || isCodespacesRuntime) &&
+  !isDevSettingsPreview &&
+  !isDevStandalonePreview &&
   (!hasConfiguredBaseUrl || !hasBasicAuth)
 
 const DevLoginBootstrap = () => {
@@ -93,7 +120,9 @@ const DevLoginBootstrap = () => {
     }
 
     window.localStorage.setItem('DHIS2_BASE_URL', sanitizedBaseUrl)
-    window.sessionStorage.setItem('DHIS2_BASIC_AUTH', `Basic ${window.btoa(`${username}:${password}`)}`)
+    const encodedAuth = `Basic ${window.btoa(`${username}:${password}`)}`
+    window.localStorage.setItem(AUTH_STORAGE_KEY, encodedAuth)
+    window.sessionStorage.setItem(AUTH_STORAGE_KEY, encodedAuth)
     window.location.reload()
   }
 
@@ -101,7 +130,7 @@ const DevLoginBootstrap = () => {
     <div style={{ padding: '24px', maxWidth: '640px', margin: '0 auto', fontFamily: 'sans-serif' }}>
       <h2 style={{ marginBottom: '8px' }}>Connect to DHIS2</h2>
       <p style={{ marginTop: 0, marginBottom: '16px' }}>
-        Configure a DHIS2 server and credentials for local development login.
+        Configure a DHIS2 server and credentials for development login.
       </p>
 
       <form onSubmit={handleSubmit}>

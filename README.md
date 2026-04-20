@@ -94,6 +94,17 @@ This project was bootstrapped with [DHIS2 Application Platform](https://github.c
 3. Configure your DHIS2 server in `.env.development`
 4. Run `yarn start` for development mode
 
+### Codespaces/Forwarded URL 401 Prevention
+
+If you test through a forwarded URL (for example on GitHub Codespaces), DHIS2 sessions can expire after long idle periods and cause `HTTP ERROR 401` on refresh.
+
+Use this flow for stable testing:
+1. Open the app and complete the development login prompt once.
+2. Keep using the same forwarded app URL while the dev server is running.
+3. If the Codespace was asleep, restart with `npm start` and refresh the page.
+
+The app now persists development auth locally and reuses it on subsequent refreshes.
+
 ## Available Scripts
 
 In the project directory, you can run:
