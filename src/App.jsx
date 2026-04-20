@@ -40,6 +40,29 @@ const MainApp = () => {
   // Persistent chat state
   const [conversation, setConversation] = useState([])
   const [dataSnapshot, setDataSnapshot] = useState(null)
+  const [authIssue, setAuthIssue] = useState(null)
+
+  const clearAuthAndReload = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('DHIS2_BASIC_AUTH')
+      window.sessionStorage.removeItem('DHIS2_BASIC_AUTH')
+      window.location.reload()
+    }
+  }
+
+  const isUnauthorizedError = (queryError) => {
+    if (!queryError) return false
+
+    const message = queryError.message || ''
+    const detailsStatus = queryError.details?.httpStatusCode || queryError.details?.status
+    const directStatus = queryError.status || queryError.statusCode
+
+    return (
+      detailsStatus === 401 ||
+      directStatus === 401 ||
+      /401|unauthorized/i.test(message)
+    )
+  }
 
   useEffect(() => {
     // Check if API configuration is set
@@ -54,6 +77,25 @@ const MainApp = () => {
 
     setApiKeySet(isConfigured)
   }, [showSettings])
+
+  useEffect(() => {
+    const onAuthIssue = (event) => {
+      const detail = event?.detail || {}
+      const defaultMessage =
+        'Your DHIS2 session appears to have expired or the forwarded link changed. Reconnect to continue.'
+      setAuthIssue(detail.message || defaultMessage)
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('dhis2-auth-issue', onAuthIssue)
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('dhis2-auth-issue', onAuthIssue)
+      }
+    }
+  }, [])
 
   // Reset conversation when data selection changes
   useEffect(() => {
@@ -71,6 +113,22 @@ const MainApp = () => {
   }
 
   if (error) {
+    const unauthorized = isUnauthorizedError(error)
+
+    if (unauthorized) {
+      return (
+        <CenteredContent>
+          <NoticeBox warning title="DHIS2 session expired">
+            Your authentication is no longer valid. Click reconnect to re-enter credentials and continue.
+            <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
+              <Button primary onClick={clearAuthAndReload}>Reconnect</Button>
+              <Button onClick={() => window.location.reload()}>Retry</Button>
+            </div>
+          </NoticeBox>
+        </CenteredContent>
+      )
+    }
+
     return (
       <CenteredContent>
         <NoticeBox error title="Error loading application">
@@ -104,6 +162,17 @@ const MainApp = () => {
 
   return (
     <div className="container">
+      {authIssue && (
+        <div className="auth-issue-banner" role="alert">
+          <span>{authIssue}</span>
+          <div className="auth-issue-actions">
+            <Button small primary onClick={clearAuthAndReload}>Reconnect</Button>
+            <Button small onClick={() => window.location.reload()}>Retry</Button>
+            <Button small onClick={() => setAuthIssue(null)}>Dismiss</Button>
+          </div>
+        </div>
+      )}
+
       <header className="header">
         <Button 
           small

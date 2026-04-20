@@ -27,6 +27,14 @@ const authBaseUrl = isLocalhostRuntime ? storedBaseUrl : null
 if (typeof window !== 'undefined' && !window.__dhis2PatchedFetch) {
   const originalFetch = window.fetch.bind(window)
 
+  const notifyAuthIssue = (payload = {}) => {
+    window.dispatchEvent(
+      new CustomEvent('dhis2-auth-issue', {
+        detail: payload,
+      })
+    )
+  }
+
   window.fetch = (input, init = {}) => {
     const basicAuth =
       window.localStorage.getItem(AUTH_STORAGE_KEY) ||
@@ -51,14 +59,37 @@ if (typeof window !== 'undefined' && !window.__dhis2PatchedFetch) {
       (isSameOriginApiRequest || (authBaseUrl && requestUrl.startsWith(authBaseUrl)))
     )
 
+    const executeFetch = (requestInit) =>
+      originalFetch(input, requestInit)
+        .then((response) => {
+          if (response && response.status === 401) {
+            notifyAuthIssue({
+              status: 401,
+              requestUrl,
+            })
+          }
+          return response
+        })
+        .catch((error) => {
+          const message = error?.message || ''
+          if (/401|unauthorized|failed to fetch|networkerror/i.test(message)) {
+            notifyAuthIssue({
+              status: 0,
+              requestUrl,
+              message,
+            })
+          }
+          throw error
+        })
+
     if (!shouldAttachAuth) {
-      return originalFetch(input, init)
+      return executeFetch(init)
     }
 
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined) || undefined)
     headers.set('Authorization', basicAuth)
 
-    return originalFetch(input, {
+    return executeFetch({
       ...init,
       headers,
     })
