@@ -131,6 +131,29 @@ export const SettingsPanel = ({ onClose, engine }) => {
     }
   }
 
+  const handleTestOllamaConnection = async () => {
+    setTestingConnection(true)
+    setTestResult(null)
+    
+    try {
+      const result = await testAIConnection({
+        serverUrl: ollamaServerUrl
+      }, 'ollama')
+      setAvailableOllamaModels(result.models || [])
+      setTestResult({
+        success: true,
+        message: `Successfully connected to Ollama. Available models: ${result.models.join(', ')}`
+      })
+    } catch (error) {
+      setTestResult({
+        success: false,
+        message: `Connection failed: ${error.message}`
+      })
+    } finally {
+      setTestingConnection(false)
+    }
+  }
+
   const handleSaveSettings = () => {
     // Create settings object based on the selected provider
     const settings = {
