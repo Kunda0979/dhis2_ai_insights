@@ -12,6 +12,10 @@ import { getSettings } from './storage'
 // session so AI query calls don't need to hit the server each time.
 
 let credentialCache = null
+let expireTimer = null
+let idleExpiresAt = null // in-memory only — not persisted
+
+const SESSION_IDLE_MS = 30 * 60 * 1000 // 30 minutes of inactivity
 
 // ── Environment detection ─────────────────────────────────────────────────
 
@@ -86,6 +90,28 @@ const dsClear = async () => {
   }
 }
 
+// ── Idle session timer ───────────────────────────────────────────────────
+// The timer resets on every AI query. Credentials are only wiped if the app
+// sits idle (no queries sent) for 30 minutes.
+
+const resetIdleTimer = () => {
+  if (expireTimer) clearTimeout(expireTimer)
+  idleExpiresAt = new Date(Date.now() + SESSION_IDLE_MS).toISOString()
+  expireTimer = setTimeout(async () => {
+    expireTimer = null
+    idleExpiresAt = null
+    credentialCache = null
+    // Best-effort wipe from storage
+    try {
+      if (isDevMode()) devClear(); else await dsClear()
+    } catch (_) {}
+    console.info('[Azure] Session cleared after 30 minutes of inactivity.')
+  }, SESSION_IDLE_MS)
+}
+
+/** Returns the ISO timestamp when the idle session will expire, or null. */
+export const getSessionExpiresAt = () => idleExpiresAt
+
 // ── Public credential API ─────────────────────────────────────────────────
 
 /**
@@ -94,9 +120,15 @@ const dsClear = async () => {
  */
 export const loadAzureCredentials = async () => {
   try {
-    const creds = isDevMode() ? devGet() : await dsGet()
-    credentialCache = creds
-    return creds
+    const stored = isDevMode() ? devGet() : await dsGet()
+    if (!stored) {
+      credentialCache = null
+      return null
+    }
+    credentialCache = stored
+    // Start a fresh idle window — user just opened the app
+    resetIdleTimer()
+    return stored
   } catch (e) {
     console.error('[Azure] Failed to load credentials:', e.message)
     credentialCache = null
@@ -110,7 +142,9 @@ export const loadAzureCredentials = async () => {
  */
 export const saveAzureCredentials = async (creds) => {
   const validated = validateCredentials(creds)
+  // Do not store an expiresAt — expiry is idle-based and tracked in memory only
   credentialCache = validated
+  resetIdleTimer()
   if (isDevMode()) {
     devSave(validated)
   } else {
@@ -122,7 +156,9 @@ export const saveAzureCredentials = async (creds) => {
  * Wipe credentials from cache and storage.
  */
 export const clearAzureCredentials = async () => {
+  if (expireTimer) { clearTimeout(expireTimer); expireTimer = null }
   credentialCache = null
+  idleExpiresAt = null
   if (isDevMode()) {
     devClear()
   } else {
@@ -207,7 +243,11 @@ const callAzure = async (creds, body) => {
 
 // ── Public session API ────────────────────────────────────────────────────
 
-export const hasAzureSession = () => Boolean(credentialCache)
+export const hasAzureSession = () => {
+  if (!credentialCache) return false
+  if (credentialCache.expiresAt && new Date(credentialCache.expiresAt).getTime() <= Date.now()) return false
+  return true
+}
 
 export const initializeAzureSession = async (credentials) => {
   await saveAzureCredentials(credentials)
@@ -228,10 +268,17 @@ export const clearAzureSession = async () => {
  * @returns {Object} The AI response
  */
 export const sendToAzureOpenAI = async (query, data, context, conversation = [], onStreamChunk = null) => {
-  const creds = credentialCache
-  if (!creds) {
-    throw new Error('Azure credentials not configured. Configure Azure OpenAI in Settings first.')
+  // Reset the idle timer — this counts as activity
+  if (hasAzureSession()) resetIdleTimer()
+
+  if (!hasAzureSession()) {
+    throw new Error(
+      credentialCache?.expiresAt
+        ? 'Azure session has expired (30 minutes). Re-enter your credentials in Settings.'
+        : 'Azure credentials not configured. Configure Azure OpenAI in Settings first.'
+    )
   }
+  const creds = credentialCache
 
   const settings = getSettings() || {}
   const maxTokens = settings.maxTokens || 2000
@@ -278,6 +325,8 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
  */
 export const testAzureOpenAIConnection = async (_options) => {
   // Credentials must already be saved (via saveAzureCredentials) before calling this.
+  // Counts as activity — reset the idle timer.
+  if (credentialCache) resetIdleTimer()
   const creds = credentialCache
   if (!creds) {
     throw new Error('Azure credentials not configured. Enter credentials in Settings first.')

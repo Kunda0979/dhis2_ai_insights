@@ -22,7 +22,7 @@ import {
   getSettings
 } from '../utils/storage'
 import { testAIConnection } from '../utils/aiService'
-import { clearAzureSession, hasAzureSession, loadAzureCredentials, saveAzureCredentials, clearAzureCredentials } from '../utils/azureOpenAI'
+import { clearAzureSession, hasAzureSession, loadAzureCredentials, saveAzureCredentials, clearAzureCredentials, getSessionExpiresAt } from '../utils/azureOpenAI'
 
 export const SettingsPanel = ({ onClose, engine }) => {
   // OpenAI settings
@@ -39,6 +39,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
   const [azureApiKey, setAzureApiKey] = useState('')
   const [azureApiKeyMasked, setAzureApiKeyMasked] = useState(true)
   const [azureSessionActive, setAzureSessionActive] = useState(false)
+  const [azureSessionExpiresAt, setAzureSessionExpiresAt] = useState(null)
 
   // Ollama settings
   const [ollamaServerUrl, setOllamaServerUrl] = useState('http://localhost:11434')
@@ -81,6 +82,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
         setAzureApiVersion(azureCreds.apiVersion || '2024-02-15-preview')
         setAzureApiKey(azureCreds.apiKey || '')
         setAzureSessionActive(true)
+        setAzureSessionExpiresAt(getSessionExpiresAt())
       }
     })
   }, [])
@@ -135,6 +137,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
       const result = await testAIConnection({}, 'azure-openai')
 
       setAzureSessionActive(true)
+      setAzureSessionExpiresAt(getSessionExpiresAt())
       setTestResult({
         success: true,
         message: result.message || 'Azure credentials saved to DHIS2 and connection verified.'
@@ -156,6 +159,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
     try {
       await clearAzureCredentials()
       setAzureSessionActive(false)
+      setAzureSessionExpiresAt(null)
       setAzureEndpoint('')
       setAzureDeploymentName('')
       setAzureApiVersion('2024-02-15-preview')
@@ -359,6 +363,15 @@ export const SettingsPanel = ({ onClose, engine }) => {
                 Analysis requests are sent directly from your browser to Azure OpenAI — no intermediary proxy
                 server is needed.
               </NoticeBox>
+
+              {azureSessionActive && azureSessionExpiresAt && (
+                <NoticeBox title="Session active — idle timeout in 30 minutes" warning>
+                  Credentials are loaded and in use. The session will be automatically cleared after
+                  <strong> 30 minutes of inactivity</strong> (no AI queries sent). Next expiry if idle
+                  until <strong>{new Date(azureSessionExpiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>.
+                  The timer resets each time you send a query.
+                </NoticeBox>
+              )}
 
               <NoticeBox title="Secure server-side storage" info>
                 Credentials (including the API key) are saved in the <strong>DHIS2 User Data Store</strong> —
