@@ -22,7 +22,7 @@ import {
   getSettings
 } from '../utils/storage'
 import { testAIConnection } from '../utils/aiService'
-import { clearAzureSession, hasAzureSession, saveAzureCredentials, getAzureCredentials, clearAzureCredentials } from '../utils/azureOpenAI'
+import { clearAzureSession, hasAzureSession, loadAzureCredentials, saveAzureCredentials, clearAzureCredentials } from '../utils/azureOpenAI'
 
 export const SettingsPanel = ({ onClose, engine }) => {
   // OpenAI settings
@@ -73,16 +73,16 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setOllamaModel(settings.ollamaModel || 'llama3')
     }
 
-    // Pre-fill Azure credentials from localStorage
-    const azureCreds = getAzureCredentials()
-    if (azureCreds) {
-      setAzureEndpoint(azureCreds.endpoint || '')
-      setAzureDeploymentName(azureCreds.deploymentName || '')
-      setAzureApiVersion(azureCreds.apiVersion || '2024-02-15-preview')
-      setAzureApiKey(azureCreds.apiKey || '')
-    }
-
-    setAzureSessionActive(hasAzureSession())
+    // Pre-fill Azure credentials from DHIS2 userDataStore (or sessionStorage in dev)
+    loadAzureCredentials().then((azureCreds) => {
+      if (azureCreds) {
+        setAzureEndpoint(azureCreds.endpoint || '')
+        setAzureDeploymentName(azureCreds.deploymentName || '')
+        setAzureApiVersion(azureCreds.apiVersion || '2024-02-15-preview')
+        setAzureApiKey(azureCreds.apiKey || '')
+        setAzureSessionActive(true)
+      }
+    })
   }, [])
 
   const handleSaveApiKey = () => {
@@ -123,18 +123,21 @@ export const SettingsPanel = ({ onClose, engine }) => {
     setTestResult(null)
     
     try {
-      const result = await testAIConnection({
+      // Save (validate + persist to DHIS2 userDataStore) before testing
+      await saveAzureCredentials({
         endpoint: azureEndpoint,
         deploymentName: azureDeploymentName,
         apiVersion: azureApiVersion,
         apiKey: azureApiKey,
-      }, 'azure-openai')
+      })
+
+      // Test uses the in-memory cache just populated by saveAzureCredentials
+      const result = await testAIConnection({}, 'azure-openai')
 
       setAzureSessionActive(true)
-
       setTestResult({
         success: true,
-        message: result.message || 'Azure credentials saved and connection verified.'
+        message: result.message || 'Azure credentials saved to DHIS2 and connection verified.'
       })
     } catch (error) {
       setTestResult({
@@ -151,7 +154,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
     setTestResult(null)
 
     try {
-      await clearAzureSession()
+      await clearAzureCredentials()
       setAzureSessionActive(false)
       setAzureEndpoint('')
       setAzureDeploymentName('')
@@ -159,7 +162,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setAzureApiKey('')
       setTestResult({
         success: true,
-        message: 'Azure credentials cleared from browser storage.'
+        message: 'Azure credentials cleared from DHIS2 user data store.'
       })
     } catch (error) {
       setTestResult({
@@ -357,9 +360,11 @@ export const SettingsPanel = ({ onClose, engine }) => {
                 server is needed.
               </NoticeBox>
 
-              <NoticeBox title="Storage policy" info>
-                Azure endpoint, deployment name, API version, and API key are saved in your browser&apos;s
-                localStorage (same as the OpenAI key). They are never sent to any server other than Azure.
+              <NoticeBox title="Secure server-side storage" info>
+                Credentials (including the API key) are saved in the <strong>DHIS2 User Data Store</strong> —
+                stored in the DHIS2 database, protected by your DHIS2 session, and never written to
+                localStorage or any third-party server. In dev mode a tab-scoped sessionStorage fallback is
+                used instead.
               </NoticeBox>
             </>
           ) : (

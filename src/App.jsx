@@ -19,6 +19,7 @@ import { SettingsPanel } from './components/SettingsPanel.jsx'
 import { DataDashboard } from './components/DataDashboard.jsx'
 import { DatasetSelector } from './components/DatasetSelector.jsx'
 import { isApiKeySet, getSettings } from './utils/storage'
+import { loadAzureCredentials } from './utils/azureOpenAI'
 
 // Query to retrieve current user's info and check connection
 const userQuery = {
@@ -69,14 +70,17 @@ const MainApp = () => {
     const settings = getSettings() || {}
     const isConfigured =
       (settings.aiProvider === 'openai' && isApiKeySet()) ||
-      (settings.aiProvider === 'azure-openai' &&
-        isApiKeySet() &&
-        settings.azureResourceName &&
-        settings.azureDeploymentName) ||
+      (settings.aiProvider === 'azure-openai') ||
       (settings.aiProvider === 'ollama' && settings.ollamaServerUrl && settings.ollamaModel)
 
     setApiKeySet(isConfigured)
   }, [showSettings])
+
+  // Warm the Azure credential cache on app startup so AI queries
+  // can use it without requiring the Settings panel to open first.
+  useEffect(() => {
+    loadAzureCredentials().catch(() => {/* non-critical */})
+  }, [])
 
   useEffect(() => {
     const onAuthIssue = (event) => {

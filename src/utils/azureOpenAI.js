@@ -1,30 +1,137 @@
 import { getSettings } from './storage'
 
 // ── Credential storage ────────────────────────────────────────────────────
-// Azure credentials are stored in localStorage (same pattern as the OpenAI key).
-// All requests go directly from the browser to Azure OpenAI — no proxy needed.
+// When deployed inside DHIS2: credentials are stored in the DHIS2 User Data
+// Store (/api/userDataStore). Access requires a valid DHIS2 session — the API
+// key never touches localStorage and is protected by DHIS2 authentication.
+//
+// In dev mode (localhost / github.dev): sessionStorage is used as a fallback.
+// sessionStorage is cleared when the tab closes, limiting exposure.
+//
+// An in-memory cache (`credentialCache`) is maintained for the current page
+// session so AI query calls don't need to hit the server each time.
 
-const AZURE_CREDS_KEY = 'dhis2-ai-insights-azure-creds'
+let credentialCache = null
 
-const getStoredCreds = () => {
+// ── Environment detection ─────────────────────────────────────────────────
+
+const isDevMode = () => {
+  if (typeof window === 'undefined') return true
+  const { hostname } = window.location
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname.endsWith('.github.dev')
+  )
+}
+
+// ── Dev fallback: sessionStorage ──────────────────────────────────────────
+
+const DEV_SESSION_KEY = 'dhis2-ai-insights-azure-session'
+
+const devGet = () => {
   try {
-    const raw = localStorage.getItem(AZURE_CREDS_KEY)
+    const raw = sessionStorage.getItem(DEV_SESSION_KEY)
     return raw ? JSON.parse(raw) : null
   } catch (_) { return null }
 }
+const devSave = (c) => {
+  try { sessionStorage.setItem(DEV_SESSION_KEY, JSON.stringify(c)) } catch (_) {}
+}
+const devClear = () => {
+  try { sessionStorage.removeItem(DEV_SESSION_KEY) } catch (_) {}
+}
 
-export const saveAzureCredentials = (creds) => {
+// ── DHIS2 User Data Store (deployed) ─────────────────────────────────────
+// The app is installed at .../api/apps/AI-Insights/index.html so
+// ../../../api resolves to the DHIS2 root API on the same origin.
+
+const DS_NAMESPACE = 'dhis2-ai-insights'
+const DS_KEY = 'azure-creds'
+const dsUrl = () => `../../../api/userDataStore/${DS_NAMESPACE}/${DS_KEY}`
+
+const dsGet = async () => {
+  const resp = await fetch(dsUrl(), { credentials: 'include' })
+  if (resp.status === 404) return null
+  if (!resp.ok) throw new Error(`DHIS2 userDataStore GET failed: HTTP ${resp.status}`)
+  return resp.json()
+}
+
+const dsSave = async (creds) => {
+  // PUT updates an existing key; fall back to POST if key does not yet exist
+  let resp = await fetch(dsUrl(), {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(creds),
+  })
+  if (resp.status === 404) {
+    resp = await fetch(dsUrl(), {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(creds),
+    })
+  }
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}))
+    throw new Error(body?.message || `DHIS2 userDataStore save failed: HTTP ${resp.status}`)
+  }
+}
+
+const dsClear = async () => {
+  const resp = await fetch(dsUrl(), { method: 'DELETE', credentials: 'include' })
+  if (!resp.ok && resp.status !== 404) {
+    throw new Error(`DHIS2 userDataStore DELETE failed: HTTP ${resp.status}`)
+  }
+}
+
+// ── Public credential API ─────────────────────────────────────────────────
+
+/**
+ * Load credentials from server (DHIS2 userDataStore or sessionStorage in dev).
+ * Call once at app startup to warm the in-memory cache.
+ */
+export const loadAzureCredentials = async () => {
   try {
-    localStorage.setItem(AZURE_CREDS_KEY, JSON.stringify(creds))
-    return true
-  } catch (_) { return false }
+    const creds = isDevMode() ? devGet() : await dsGet()
+    credentialCache = creds
+    return creds
+  } catch (e) {
+    console.error('[Azure] Failed to load credentials:', e.message)
+    credentialCache = null
+    return null
+  }
 }
 
-export const getAzureCredentials = () => getStoredCreds()
-
-export const clearAzureCredentials = () => {
-  try { localStorage.removeItem(AZURE_CREDS_KEY) } catch (_) {}
+/**
+ * Validate, persist, and cache credentials.
+ * Throws if validation fails or the server write fails.
+ */
+export const saveAzureCredentials = async (creds) => {
+  const validated = validateCredentials(creds)
+  credentialCache = validated
+  if (isDevMode()) {
+    devSave(validated)
+  } else {
+    await dsSave(validated)
+  }
 }
+
+/**
+ * Wipe credentials from cache and storage.
+ */
+export const clearAzureCredentials = async () => {
+  credentialCache = null
+  if (isDevMode()) {
+    devClear()
+  } else {
+    await dsClear()
+  }
+}
+
+/** Returns the in-memory cached credentials (sync, no I/O). */
+export const getAzureCredentials = () => credentialCache
 
 // ── Validation ────────────────────────────────────────────────────────────
 
@@ -100,16 +207,15 @@ const callAzure = async (creds, body) => {
 
 // ── Public session API ────────────────────────────────────────────────────
 
-export const hasAzureSession = () => Boolean(getStoredCreds())
+export const hasAzureSession = () => Boolean(credentialCache)
 
 export const initializeAzureSession = async (credentials) => {
-  const validated = validateCredentials(credentials)
-  saveAzureCredentials(validated)
+  await saveAzureCredentials(credentials)
   return { azureSessionId: 'browser-direct', expiresAt: null }
 }
 
 export const clearAzureSession = async () => {
-  clearAzureCredentials()
+  await clearAzureCredentials()
 }
 
 /**
@@ -122,7 +228,7 @@ export const clearAzureSession = async () => {
  * @returns {Object} The AI response
  */
 export const sendToAzureOpenAI = async (query, data, context, conversation = [], onStreamChunk = null) => {
-  const creds = getStoredCreds()
+  const creds = credentialCache
   if (!creds) {
     throw new Error('Azure credentials not configured. Configure Azure OpenAI in Settings first.')
   }
@@ -170,15 +276,9 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
  * @param {Object} options - Connection options
  * @returns {Object} Test result
  */
-export const testAzureOpenAIConnection = async (options) => {
-  let creds
-  if (options && (options.endpoint || options.apiKey)) {
-    creds = validateCredentials(options)
-    saveAzureCredentials(creds)
-  } else {
-    creds = getStoredCreds()
-  }
-
+export const testAzureOpenAIConnection = async (_options) => {
+  // Credentials must already be saved (via saveAzureCredentials) before calling this.
+  const creds = credentialCache
   if (!creds) {
     throw new Error('Azure credentials not configured. Enter credentials in Settings first.')
   }

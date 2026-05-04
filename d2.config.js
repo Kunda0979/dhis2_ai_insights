@@ -11,7 +11,6 @@ const config = {
     entryPoints: {
         app: './src/App.jsx',
     },
-    minDhisVersion: '2.35',
     authorities: []
 }
 
