@@ -1,48 +1,173 @@
 import axios from 'axios'
-import { getApiKeyFromStorage, getSettings } from './storage'
+import { getSettings } from './storage'
 
-const DEFAULT_AZURE_API_VERSION = '2024-02-15-preview'
+const DEFAULT_AZURE_PROXY_BASE_URL = 'http://localhost:3000'
+const AZURE_PROXY_ENDPOINT_BASE = '/azure-openai'
+let azureSessionId = null
+let unloadHandlerAttached = false
 
-const normalizeAzureEndpoint = (resourceInput) => {
-  const raw = (resourceInput || '').trim()
-  if (!raw) {
+const resolveForwardedAzureProxyUrl = () => {
+  if (typeof window === 'undefined') {
     return null
   }
 
-  // Accept either a full endpoint URL or only the resource name
-  if (raw.startsWith('http://') || raw.startsWith('https://')) {
-    try {
-      const parsed = new URL(raw)
-      return parsed.origin
-    } catch (error) {
-      return null
-    }
+  const { protocol, hostname, port } = window.location
+
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return `${protocol}//${hostname}:3000`
   }
 
-  return `https://${raw}.openai.azure.com`
+  if (port) {
+    return `${protocol}//${hostname}:3000`
+  }
+
+  const githubDevMatch = hostname.match(/^(.*-)(\d+)(\.app\.github\.dev)$/)
+  if (githubDevMatch) {
+    return `${protocol}//${githubDevMatch[1]}3000${githubDevMatch[3]}`
+  }
+
+  return null
+}
+
+const resolveAzureProxyBaseUrl = () => {
+  // 1. Build-time env var (Codespaces dev mode)
+  const configured = (process.env.REACT_APP_AZURE_PROXY_BASE_URL || '').trim()
+  if (configured) return configured
+
+  // 2. User-saved proxy URL from Settings (works when app is uploaded to DHIS2)
+  try {
+    const saved = localStorage.getItem('dhis2-ai-insights-settings')
+    if (saved) {
+      const settings = JSON.parse(saved)
+      const saved_url = (settings.azureProxyUrl || '').trim().replace(/\/$/, '')
+      if (saved_url) return saved_url
+    }
+  } catch (_) {}
+
+  // 3. Auto-detect Codespaces / localhost
+  const forwarded = resolveForwardedAzureProxyUrl()
+  return forwarded || DEFAULT_AZURE_PROXY_BASE_URL
 }
 
 const toAzureErrorMessage = (error) => {
   const status = error?.response?.status
-  const apiMessage = error?.response?.data?.error?.message
+  const apiMessage = error?.response?.data?.error?.message || error?.response?.data?.message
 
   if (apiMessage) {
     return apiMessage
   }
 
   if (error?.code === 'ERR_NETWORK') {
-    return 'Network/CORS error while calling Azure OpenAI. Verify endpoint URL, firewall rules, and allowed browser origins.'
+    return 'Network/CORS error while calling the Azure proxy. Verify the proxy is running and reachable.'
   }
 
-  if (status === 401 || status === 403) {
-    return 'Authentication failed. Verify your Azure OpenAI API key and endpoint.'
+  if (status === 401) {
+    return 'Azure session missing or expired. Re-enter credentials in Settings to create a new session.'
+  }
+
+  if (status === 403 || status === 503) {
+    return 'Azure proxy is unavailable. Please verify the local proxy is running and try again.'
   }
 
   if (status === 404) {
-    return 'Deployment or endpoint not found. Verify the endpoint/resource name and deployment name.'
+    return 'Azure proxy endpoint not found. Verify the proxy server routes and base URL.'
   }
 
-  return error?.message || 'Failed to communicate with Azure OpenAI API. Please check your configuration and try again.'
+  if (status === 413) {
+    return 'Request too large. Narrow period, org unit, or indicators.'
+  }
+
+  if (status === 429) {
+    return 'Too many Azure requests in a short period. Please wait and try again.'
+  }
+
+  return error?.message || 'Failed to communicate with Azure proxy. Please check your configuration and try again.'
+}
+
+const attachUnloadCleanup = () => {
+  if (unloadHandlerAttached || typeof window === 'undefined') {
+    return
+  }
+
+  window.addEventListener('beforeunload', () => {
+    if (!azureSessionId || typeof navigator === 'undefined' || !navigator.sendBeacon) {
+      return
+    }
+
+    const proxyBaseUrl = resolveAzureProxyBaseUrl()
+    const payload = JSON.stringify({ azureSessionId })
+    navigator.sendBeacon(
+      `${proxyBaseUrl}${AZURE_PROXY_ENDPOINT_BASE}/session/clear`,
+      new Blob([payload], { type: 'application/json' })
+    )
+  })
+
+  unloadHandlerAttached = true
+}
+
+const validateAzureCredentialInput = (credentials) => {
+  const endpoint = (credentials?.endpoint || '').trim()
+  const deploymentName = (credentials?.deploymentName || '').trim()
+  const apiVersion = (credentials?.apiVersion || '2024-02-15-preview').trim()
+  const apiKey = (credentials?.apiKey || '').trim()
+
+  if (!endpoint || !deploymentName || !apiVersion || !apiKey) {
+    throw new Error('Azure endpoint, deployment name, API version, and API key are required.')
+  }
+
+  return { endpoint, deploymentName, apiVersion, apiKey }
+}
+
+export const hasAzureSession = () => Boolean(azureSessionId)
+
+export const initializeAzureSession = async (credentials) => {
+  const proxyBaseUrl = resolveAzureProxyBaseUrl()
+  const validated = validateAzureCredentialInput(credentials)
+
+  const response = await axios.post(
+    `${proxyBaseUrl}${AZURE_PROXY_ENDPOINT_BASE}/session`,
+    {
+      endpoint: validated.endpoint,
+      deploymentName: validated.deploymentName,
+      apiVersion: validated.apiVersion,
+      apiKey: validated.apiKey,
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    }
+  )
+
+  azureSessionId = response.data?.azureSessionId || null
+  attachUnloadCleanup()
+
+  if (!azureSessionId) {
+    throw new Error('Failed to initialize Azure session on proxy.')
+  }
+
+  return {
+    azureSessionId,
+    expiresAt: response.data?.expiresAt || null,
+  }
+}
+
+export const clearAzureSession = async () => {
+  if (!azureSessionId) {
+    return
+  }
+
+  const proxyBaseUrl = resolveAzureProxyBaseUrl()
+
+  try {
+    await axios.delete(`${proxyBaseUrl}${AZURE_PROXY_ENDPOINT_BASE}/session`, {
+      headers: {
+        'X-Azure-Session-Id': azureSessionId,
+      }
+    })
+  } finally {
+    azureSessionId = null
+  }
 }
 
 /**
@@ -55,21 +180,13 @@ const toAzureErrorMessage = (error) => {
  * @returns {Object} The AI response
  */
 export const sendToAzureOpenAI = async (query, data, context, conversation = [], onStreamChunk = null) => {
-  const apiKey = (getApiKeyFromStorage() || '').trim()
-  if (!apiKey) {
-    throw new Error('Azure OpenAI API key not configured')
-  }
-
-  // Get settings
   const settings = getSettings() || {}
-  const endpoint = normalizeAzureEndpoint(settings.azureResourceName)
-  const deploymentName = (settings.azureDeploymentName || '').trim()
-  const apiVersion = (settings.azureApiVersion || DEFAULT_AZURE_API_VERSION).trim()
+  const proxyBaseUrl = resolveAzureProxyBaseUrl()
   const maxTokens = settings.maxTokens || 2000
   const temperature = settings.temperature || 0.7
 
-  if (!endpoint || !deploymentName) {
-    throw new Error('Azure OpenAI endpoint/resource name and deployment name must be configured')
+  if (!azureSessionId) {
+    throw new Error('Azure session is not initialized. Configure Azure credentials in Settings and test connection first.')
   }
 
   // Prepare prompt with context and data
@@ -87,159 +204,49 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
   // Add the current query
   messages.push({ role: 'user', content: query })
 
-  const url = `${endpoint}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
-
   try {
-    // If streaming is requested, use fetch API for SSE
-    if (onStreamChunk) {
-      return await handleStreamingResponse(
-        url,
-        {
-          messages,
-          max_tokens: maxTokens,
-          temperature,
-          n: 1,
-          stream: true,
-        },
-        apiKey,
-        onStreamChunk
-      )
-    } else {
-      // Use regular axios for non-streaming requests
-      const response = await axios.post(
-        url,
-        {
-          messages,
-          max_tokens: maxTokens,
-          temperature,
-          n: 1,
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'api-key': apiKey
-          }
+    const response = await axios.post(
+      `${proxyBaseUrl}${AZURE_PROXY_ENDPOINT_BASE}/analyze`,
+      {
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+        n: 1,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Azure-Session-Id': azureSessionId,
         }
-      )
-
-      // Extract the AI's message
-      const aiMessage = response.data.choices[0].message.content
-
-      // Process for recommendations (optional)
-      const recommendations = extractRecommendations(aiMessage)
-
-      // Create final response object
-      const result = {
-        message: aiMessage,
-        recommendations: recommendations.length > 0 ? recommendations : null,
-        usage: response.data.usage
       }
+    )
 
-      return result
+    const aiMessage = response.data?.choices?.[0]?.message?.content || ''
+    const recommendations = extractRecommendations(aiMessage)
+
+    if (onStreamChunk && aiMessage) {
+      onStreamChunk(aiMessage)
+    }
+
+    return {
+      message: aiMessage,
+      recommendations: recommendations.length > 0 ? recommendations : null,
+      usage: response.data?.usage,
     }
   } catch (error) {
     console.error('Azure OpenAI API Error:', error.response?.data || error.message)
 
     // Check if it's a token limit error
-    const errorMessage = error.response?.data?.error?.message || error.message
+    const responseErrorMessage = error.response?.data?.error?.message || error.response?.data?.message
+    const fallbackMessage = toAzureErrorMessage(error)
+    const errorMessage = responseErrorMessage || fallbackMessage
     if (errorMessage && errorMessage.includes('maximum context length')) {
       throw new Error(
         'Too much conversation history. Please click "Clear Chat" to start fresh and try your question again.'
       )
     }
 
-    throw new Error(errorMessage || toAzureErrorMessage(error))
-  }
-}
-
-/**
- * Handle streaming response from Azure OpenAI API
- * @param {string} url - The API endpoint URL
- * @param {Object} requestBody - The request body
- * @param {string} apiKey - The API key
- * @param {Function} onStreamChunk - Callback for streaming chunks
- * @returns {Object} The complete response
- */
-const handleStreamingResponse = async (url, requestBody, apiKey, onStreamChunk) => {
-  let fullMessage = ''
-  let usage = null
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': apiKey
-      },
-      body: JSON.stringify(requestBody)
-    })
-
-    if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(errorData.error?.message || 'Failed to communicate with Azure OpenAI API')
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      const chunk = decoder.decode(value)
-      const lines = chunk.split('\n')
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6)
-          if (data === '[DONE]') {
-            break
-          }
-
-          try {
-            const parsed = JSON.parse(data)
-            const delta = parsed.choices[0]?.delta
-
-            if (delta?.content) {
-              fullMessage += delta.content
-              onStreamChunk(delta.content)
-            }
-
-            // Capture usage info from the last chunk
-            if (parsed.usage) {
-              usage = parsed.usage
-            }
-          } catch (e) {
-            // Skip invalid JSON lines
-            continue
-          }
-        }
-      }
-    }
-
-    // Process for recommendations
-    const recommendations = extractRecommendations(fullMessage)
-
-    // Create final response object
-    const result = {
-      message: fullMessage,
-      recommendations: recommendations.length > 0 ? recommendations : null,
-      usage: usage
-    }
-
-    return result
-  } catch (error) {
-    console.error('Azure OpenAI Streaming Error:', error)
-
-    // Check if it's a token limit error
-    const errorMessage = error.message || ''
-    if (errorMessage.includes('maximum context length')) {
-      throw new Error(
-        'Too much conversation history. Please click "Clear Chat" to start fresh and try your question again.'
-      )
-    }
-
-    throw error
+    throw new Error(errorMessage)
   }
 }
 
@@ -248,45 +255,28 @@ const handleStreamingResponse = async (url, requestBody, apiKey, onStreamChunk) 
  * @param {Object} options - Connection options
  * @returns {Object} Test result
  */
-export const testAzureOpenAIConnection = async (options) => {
-  const {
-    apiKey,
-    resourceName,
-    deploymentName,
-    apiVersion = DEFAULT_AZURE_API_VERSION,
-  } = options
-
-  const trimmedApiKey = (apiKey || '').trim()
-  const endpoint = normalizeAzureEndpoint(resourceName)
-  const trimmedDeployment = (deploymentName || '').trim()
-  const trimmedVersion = (apiVersion || DEFAULT_AZURE_API_VERSION).trim()
-
-  if (!trimmedApiKey || !endpoint || !trimmedDeployment) {
-    throw new Error('Azure OpenAI API key, endpoint/resource name, and deployment name are required')
-  }
+export const testAzureOpenAIConnection = async (_options) => {
+  const proxyBaseUrl = resolveAzureProxyBaseUrl()
 
   try {
-    const url = `${endpoint}/openai/deployments/${trimmedDeployment}/chat/completions?api-version=${trimmedVersion}`
+    if (_options && (_options.endpoint || _options.deploymentName || _options.apiVersion || _options.apiKey)) {
+      await initializeAzureSession(_options)
+    }
 
-    await axios.post(
-      url,
-      {
-        messages: [{ role: 'user', content: 'Hello' }],
-        max_tokens: 10,
-        temperature: 0.7,
-        n: 1,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'api-key': trimmedApiKey
-        }
+    if (!azureSessionId) {
+      throw new Error('Azure session is not initialized. Enter Azure credentials and test again.')
+    }
+
+    const response = await axios.get(`${proxyBaseUrl}${AZURE_PROXY_ENDPOINT_BASE}/test`, {
+      headers: {
+        'X-Azure-Session-Id': azureSessionId,
       }
-    )
+    })
 
     return {
       success: true,
-      message: 'Successfully connected to Azure OpenAI API'
+      message: response.data?.message || 'Successfully connected to Azure OpenAI proxy',
+      expiresAt: response.data?.expiresAt || null,
     }
   } catch (error) {
     console.error('Azure OpenAI API Connection Test Error:', error.response?.data || error.message)
@@ -458,8 +448,6 @@ You are an AI assistant specialized in analyzing DHIS2 health data for healthcar
 IMPORTANT: Never display technical identifiers (UIDs like "UsSUX0cpKsH") in your response. Always refer to data elements and organization units by their proper names.
 
 ## Context:
-- User: ${context.user.name} (${context.user.username})
-- Organization Units: ${context.user.orgUnits}
 - Data Elements: ${Array.isArray(context.dataElements) ? context.dataElements.join(', ') : 'None selected'}
 - Period: ${context.period}
 - Organization Unit: ${context.orgUnit.displayName || context.orgUnit.name || "Selected organization unit"}

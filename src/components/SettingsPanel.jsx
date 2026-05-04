@@ -22,6 +22,7 @@ import {
   getSettings
 } from '../utils/storage'
 import { testAIConnection } from '../utils/aiService'
+import { clearAzureSession, hasAzureSession } from '../utils/azureOpenAI'
 
 export const SettingsPanel = ({ onClose, engine }) => {
   // OpenAI settings
@@ -30,11 +31,17 @@ export const SettingsPanel = ({ onClose, engine }) => {
   
   // AI Provider selection
   const [aiProvider, setAIProvider] = useState('openai')
-  
-  // Azure OpenAI settings
-  const [azureResourceName, setAzureResourceName] = useState('')
+
+  // Azure proxy URL (persisted in settings)
+  const [azureProxyUrl, setAzureProxyUrl] = useState('')
+
+  // Azure credentials (memory-only; never persisted)
+  const [azureEndpoint, setAzureEndpoint] = useState('')
   const [azureDeploymentName, setAzureDeploymentName] = useState('')
   const [azureApiVersion, setAzureApiVersion] = useState('2024-02-15-preview')
+  const [azureApiKey, setAzureApiKey] = useState('')
+  const [azureApiKeyMasked, setAzureApiKeyMasked] = useState(true)
+  const [azureSessionActive, setAzureSessionActive] = useState(false)
 
   // Ollama settings
   const [ollamaServerUrl, setOllamaServerUrl] = useState('http://localhost:11434')
@@ -67,10 +74,10 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setAIProvider(settings.aiProvider || 'openai')
       setOllamaServerUrl(settings.ollamaServerUrl || 'http://localhost:11434')
       setOllamaModel(settings.ollamaModel || 'llama3')
-      setAzureResourceName(settings.azureResourceName || '')
-      setAzureDeploymentName(settings.azureDeploymentName || '')
-      setAzureApiVersion(settings.azureApiVersion || '2024-02-15-preview')
+      setAzureProxyUrl(settings.azureProxyUrl || '')
     }
+
+    setAzureSessionActive(hasAzureSession())
   }, [])
 
   const handleSaveApiKey = () => {
@@ -112,19 +119,46 @@ export const SettingsPanel = ({ onClose, engine }) => {
     
     try {
       const result = await testAIConnection({
-        apiKey: apiKey.trim(),
-        resourceName: azureResourceName.trim(),
-        deploymentName: azureDeploymentName.trim(),
-        apiVersion: azureApiVersion.trim()
+        endpoint: azureEndpoint,
+        deploymentName: azureDeploymentName,
+        apiVersion: azureApiVersion,
+        apiKey: azureApiKey,
       }, 'azure-openai')
+
+      // Discard key from UI memory once backend session is created.
+      setAzureApiKey('')
+      setAzureSessionActive(true)
+
       setTestResult({
         success: true,
-        message: 'Successfully connected to Azure OpenAI API'
+        message: result.message || 'Azure session created and connection verified.'
       })
     } catch (error) {
       setTestResult({
         success: false,
         message: `Connection failed: ${error.message}`
+      })
+    } finally {
+      setTestingConnection(false)
+    }
+  }
+
+  const handleClearAzureSession = async () => {
+    setTestingConnection(true)
+    setTestResult(null)
+
+    try {
+      await clearAzureSession()
+      setAzureSessionActive(false)
+      setAzureApiKey('')
+      setTestResult({
+        success: true,
+        message: 'Azure session cleared from proxy memory.'
+      })
+    } catch (error) {
+      setTestResult({
+        success: false,
+        message: `Unable to clear Azure session: ${error.message}`
       })
     } finally {
       setTestingConnection(false)
@@ -170,14 +204,12 @@ export const SettingsPanel = ({ onClose, engine }) => {
       settings.ollamaServerUrl = ollamaServerUrl
       settings.ollamaModel = ollamaModel
     } else if (aiProvider === 'azure-openai') {
-      settings.azureResourceName = azureResourceName.trim()
-      settings.azureDeploymentName = azureDeploymentName.trim()
-      settings.azureApiVersion = azureApiVersion.trim()
       settings.temperature = temperature
+      settings.azureProxyUrl = azureProxyUrl.trim()
     }
     
-    // Save API key if configured
-    if (apiKey && apiKey.trim()) {
+    // Save API key only for direct OpenAI provider
+    if (aiProvider === 'openai' && apiKey && apiKey.trim()) {
       saveApiKey(apiKey.trim())
     }
     
@@ -247,62 +279,43 @@ export const SettingsPanel = ({ onClose, engine }) => {
             <>
               <h3>Azure OpenAI Configuration</h3>
               <p>
-                Configure your Azure OpenAI resource settings. You need your Azure OpenAI resource name,
-                deployment name, and API key.
+                Azure is routed through a secure local proxy. Your credentials are sent once to the backend to
+                create a short-lived session and are never persisted in browser storage.
               </p>
-              
+
               <div className="settings-field">
                 <InputField
-                  label="Azure OpenAI API Key"
-                  type={apiKeyMasked ? 'password' : 'text'}
-                  value={apiKey}
-                  onChange={({ value }) => setApiKey(value)}
-                  placeholder="your-azure-openai-api-key"
-                  helpText="Your Azure OpenAI API key will be stored securely in your browser's local storage."
+                  label="Proxy Server URL"
+                  type="url"
+                  value={azureProxyUrl}
+                  onChange={({ value }) => setAzureProxyUrl(value)}
+                  placeholder="https://your-codespace-3000.app.github.dev"
+                  helpText="URL of the local proxy server. When running as an uploaded DHIS2 app, paste the Codespaces port-3000 forwarded URL here and click Save Settings."
                 />
-                <Box margin="8px 0">
-                  <Switch
-                    label="Show API key"
-                    checked={!apiKeyMasked}
-                    onChange={() => setApiKeyMasked(!apiKeyMasked)}
-                  />
-                </Box>
-                <Box margin="16px 0">
-                  <ButtonStrip>
-                    <Button primary onClick={handleSaveApiKey}>Save API Key</Button>
-                    <Button destructive onClick={handleClearApiKey}>Clear API Key</Button>
-                    <Button 
-                      onClick={handleTestAzureOpenAIConnection} 
-                      disabled={!apiKey || !azureResourceName || !azureDeploymentName || testingConnection}
-                    >
-                      {testingConnection ? 'Testing...' : 'Test Connection'}
-                    </Button>
-                  </ButtonStrip>
-                </Box>
               </div>
               
               <div className="settings-field">
                 <InputField
-                  label="Resource Name"
+                  label="Azure Endpoint"
                   type="text"
-                  value={azureResourceName}
-                  onChange={({ value }) => setAzureResourceName(value)}
-                  placeholder="your-resource-name"
-                  helpText="Use either your Azure resource name (for example: my-azure-openai) or a full endpoint URL (for example: https://my-azure-openai.openai.azure.com)."
+                  value={azureEndpoint}
+                  onChange={({ value }) => setAzureEndpoint(value)}
+                  placeholder="https://your-resource.openai.azure.com"
+                  helpText="Used only to initialize a secure backend Azure session."
                 />
               </div>
-              
+
               <div className="settings-field">
                 <InputField
                   label="Deployment Name"
                   type="text"
                   value={azureDeploymentName}
                   onChange={({ value }) => setAzureDeploymentName(value)}
-                  placeholder="gpt-4"
-                  helpText="The name of your model deployment in Azure OpenAI."
+                  placeholder="your-deployment"
+                  helpText="Used only to initialize the backend Azure session."
                 />
               </div>
-              
+
               <div className="settings-field">
                 <InputField
                   label="API Version"
@@ -310,9 +323,49 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureApiVersion}
                   onChange={({ value }) => setAzureApiVersion(value)}
                   placeholder="2024-02-15-preview"
-                  helpText="The API version to use (default: 2024-02-15-preview)."
+                  helpText="Used only for the backend Azure session."
                 />
               </div>
+
+              <div className="settings-field">
+                <InputField
+                  label="Azure API Key"
+                  type={azureApiKeyMasked ? 'password' : 'text'}
+                  value={azureApiKey}
+                  onChange={({ value }) => setAzureApiKey(value)}
+                  placeholder="azure-api-key"
+                  helpText="The key is sent once to create a proxy session, then cleared from this form."
+                />
+                <Box margin="8px 0">
+                  <Switch
+                    label="Show Azure API key"
+                    checked={!azureApiKeyMasked}
+                    onChange={() => setAzureApiKeyMasked(!azureApiKeyMasked)}
+                  />
+                </Box>
+                <Box margin="16px 0">
+                  <ButtonStrip>
+                    <Button 
+                      onClick={handleTestAzureOpenAIConnection} 
+                      disabled={!azureEndpoint || !azureDeploymentName || !azureApiVersion || !azureApiKey || testingConnection}
+                    >
+                      {testingConnection ? 'Testing...' : 'Create Session and Test Connection'}
+                    </Button>
+                    <Button onClick={handleClearAzureSession} disabled={!azureSessionActive || testingConnection}>
+                      Clear Azure Session
+                    </Button>
+                  </ButtonStrip>
+                </Box>
+              </div>
+              
+              <NoticeBox title="No browser-to-Azure traffic" success>
+                All Azure analysis requests are sent to /azure-openai/analyze with a short-lived session ID.
+              </NoticeBox>
+
+              <NoticeBox title="Storage policy" info>
+                Azure endpoint, deployment, API version, and API key are kept in component memory only and never
+                written to localStorage, sessionStorage, or IndexedDB.
+              </NoticeBox>
             </>
           ) : (
             <>
@@ -330,7 +383,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   <li>Navigate to the <code>ollama-proxy</code> folder in your app files</li>
                   <li>Run <code>npm install</code> to install dependencies</li>
                   <li>Start the proxy with <code>npm start</code></li>
-                  <li>Use <code>http://localhost:3001</code> as the Ollama Server URL in settings</li>
+                  <li>Use <code>http://localhost:3000</code> as the Ollama Server URL in settings</li>
                   <li>For larger models that might time out, you can set a custom timeout:
                     <code>TIMEOUT=120000 node proxy.js</code> (for 120 seconds)</li>
                 </ol>
