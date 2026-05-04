@@ -22,7 +22,7 @@ import {
   getSettings
 } from '../utils/storage'
 import { testAIConnection } from '../utils/aiService'
-import { clearAzureSession, hasAzureSession } from '../utils/azureOpenAI'
+import { clearAzureSession, hasAzureSession, saveAzureCredentials, getAzureCredentials, clearAzureCredentials } from '../utils/azureOpenAI'
 
 export const SettingsPanel = ({ onClose, engine }) => {
   // OpenAI settings
@@ -32,10 +32,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
   // AI Provider selection
   const [aiProvider, setAIProvider] = useState('openai')
 
-  // Azure proxy URL (persisted in settings)
-  const [azureProxyUrl, setAzureProxyUrl] = useState('')
-
-  // Azure credentials (memory-only; never persisted)
+  // Azure credentials (stored in localStorage via saveAzureCredentials)
   const [azureEndpoint, setAzureEndpoint] = useState('')
   const [azureDeploymentName, setAzureDeploymentName] = useState('')
   const [azureApiVersion, setAzureApiVersion] = useState('2024-02-15-preview')
@@ -74,7 +71,15 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setAIProvider(settings.aiProvider || 'openai')
       setOllamaServerUrl(settings.ollamaServerUrl || 'http://localhost:11434')
       setOllamaModel(settings.ollamaModel || 'llama3')
-      setAzureProxyUrl(settings.azureProxyUrl || '')
+    }
+
+    // Pre-fill Azure credentials from localStorage
+    const azureCreds = getAzureCredentials()
+    if (azureCreds) {
+      setAzureEndpoint(azureCreds.endpoint || '')
+      setAzureDeploymentName(azureCreds.deploymentName || '')
+      setAzureApiVersion(azureCreds.apiVersion || '2024-02-15-preview')
+      setAzureApiKey(azureCreds.apiKey || '')
     }
 
     setAzureSessionActive(hasAzureSession())
@@ -125,13 +130,11 @@ export const SettingsPanel = ({ onClose, engine }) => {
         apiKey: azureApiKey,
       }, 'azure-openai')
 
-      // Discard key from UI memory once backend session is created.
-      setAzureApiKey('')
       setAzureSessionActive(true)
 
       setTestResult({
         success: true,
-        message: result.message || 'Azure session created and connection verified.'
+        message: result.message || 'Azure credentials saved and connection verified.'
       })
     } catch (error) {
       setTestResult({
@@ -150,15 +153,18 @@ export const SettingsPanel = ({ onClose, engine }) => {
     try {
       await clearAzureSession()
       setAzureSessionActive(false)
+      setAzureEndpoint('')
+      setAzureDeploymentName('')
+      setAzureApiVersion('2024-02-15-preview')
       setAzureApiKey('')
       setTestResult({
         success: true,
-        message: 'Azure session cleared from proxy memory.'
+        message: 'Azure credentials cleared from browser storage.'
       })
     } catch (error) {
       setTestResult({
         success: false,
-        message: `Unable to clear Azure session: ${error.message}`
+        message: `Unable to clear Azure credentials: ${error.message}`
       })
     } finally {
       setTestingConnection(false)
@@ -205,7 +211,6 @@ export const SettingsPanel = ({ onClose, engine }) => {
       settings.ollamaModel = ollamaModel
     } else if (aiProvider === 'azure-openai') {
       settings.temperature = temperature
-      settings.azureProxyUrl = azureProxyUrl.trim()
     }
     
     // Save API key only for direct OpenAI provider
@@ -279,21 +284,10 @@ export const SettingsPanel = ({ onClose, engine }) => {
             <>
               <h3>Azure OpenAI Configuration</h3>
               <p>
-                Azure is routed through a secure local proxy. Your credentials are sent once to the backend to
-                create a short-lived session and are never persisted in browser storage.
+                Credentials are stored in your browser&apos;s localStorage and used to call Azure OpenAI
+                directly — no proxy server is required.
               </p>
 
-              <div className="settings-field">
-                <InputField
-                  label="Proxy Server URL"
-                  type="url"
-                  value={azureProxyUrl}
-                  onChange={({ value }) => setAzureProxyUrl(value)}
-                  placeholder="https://your-codespace-3000.app.github.dev"
-                  helpText="URL of the local proxy server. When running as an uploaded DHIS2 app, paste the Codespaces port-3000 forwarded URL here and click Save Settings."
-                />
-              </div>
-              
               <div className="settings-field">
                 <InputField
                   label="Azure Endpoint"
@@ -301,7 +295,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureEndpoint}
                   onChange={({ value }) => setAzureEndpoint(value)}
                   placeholder="https://your-resource.openai.azure.com"
-                  helpText="Used only to initialize a secure backend Azure session."
+                  helpText="Your Azure OpenAI resource endpoint."
                 />
               </div>
 
@@ -312,7 +306,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureDeploymentName}
                   onChange={({ value }) => setAzureDeploymentName(value)}
                   placeholder="your-deployment"
-                  helpText="Used only to initialize the backend Azure session."
+                  helpText="The name of your Azure OpenAI model deployment."
                 />
               </div>
 
@@ -323,7 +317,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureApiVersion}
                   onChange={({ value }) => setAzureApiVersion(value)}
                   placeholder="2024-02-15-preview"
-                  helpText="Used only for the backend Azure session."
+                  helpText="Azure OpenAI API version."
                 />
               </div>
 
@@ -334,7 +328,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureApiKey}
                   onChange={({ value }) => setAzureApiKey(value)}
                   placeholder="azure-api-key"
-                  helpText="The key is sent once to create a proxy session, then cleared from this form."
+                  helpText="Stored in localStorage and sent directly to Azure. Never transmitted to any third-party proxy."
                 />
                 <Box margin="8px 0">
                   <Switch
@@ -349,22 +343,23 @@ export const SettingsPanel = ({ onClose, engine }) => {
                       onClick={handleTestAzureOpenAIConnection} 
                       disabled={!azureEndpoint || !azureDeploymentName || !azureApiVersion || !azureApiKey || testingConnection}
                     >
-                      {testingConnection ? 'Testing...' : 'Create Session and Test Connection'}
+                      {testingConnection ? 'Testing...' : 'Save & Test Azure Connection'}
                     </Button>
-                    <Button onClick={handleClearAzureSession} disabled={!azureSessionActive || testingConnection}>
-                      Clear Azure Session
+                    <Button onClick={handleClearAzureSession} disabled={testingConnection}>
+                      Clear Azure Credentials
                     </Button>
                   </ButtonStrip>
                 </Box>
               </div>
               
-              <NoticeBox title="No browser-to-Azure traffic" success>
-                All Azure analysis requests are sent to /azure-openai/analyze with a short-lived session ID.
+              <NoticeBox title="Direct browser-to-Azure calls" success>
+                Analysis requests are sent directly from your browser to Azure OpenAI — no intermediary proxy
+                server is needed.
               </NoticeBox>
 
               <NoticeBox title="Storage policy" info>
-                Azure endpoint, deployment, API version, and API key are kept in component memory only and never
-                written to localStorage, sessionStorage, or IndexedDB.
+                Azure endpoint, deployment name, API version, and API key are saved in your browser&apos;s
+                localStorage (same as the OpenAI key). They are never sent to any server other than Azure.
               </NoticeBox>
             </>
           ) : (
