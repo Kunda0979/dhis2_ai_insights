@@ -306,6 +306,14 @@ const checkAndIncrementUsageCaps = (res) => {
 // ── Task 6: Structured audit logging ────────────────────────────────────
 // Emits JSON lines to stdout. NEVER logs prompts, DHIS2 data values,
 // API keys, session IDs, or raw user identifiers.
+//
+// WHY prompts are excluded from logs:
+//   Azure OpenAI does not use customer prompts or responses for model training
+//   (Microsoft Azure OpenAI Service data privacy commitment, April 2023+).
+//   The application reinforces this guarantee by never persisting prompt text
+//   anywhere — not in logs, not in databases, not in files. Only request
+//   metadata (token count, latency, status) is retained for audit purposes.
+//   Reference: https://learn.microsoft.com/en-us/legal/cognitive-services/openai/data-privacy
 const auditLog = (fields = {}) => {
   const hashedUser = fields.userId
     ? crypto.createHash('sha256').update(String(fields.userId)).digest('hex').slice(0, 16)
@@ -381,6 +389,27 @@ const getAzureSession = (req) => {
 // ── Task 8: Azure call with explicit timeout ────────────────────────────
 // Uses AbortController so stalled Azure responses do not hang the proxy.
 // No retries — a retry could amplify cost or abuse.
+//
+// ── Azure OpenAI vs public OpenAI — data privacy distinction ────────────
+// This proxy calls the Azure OpenAI Service (*.openai.azure.com), NOT the
+// public OpenAI API (api.openai.com). The distinction matters for data privacy:
+//
+//   Azure OpenAI Service:
+//   • Customer data (prompts + responses) is NOT used to train, retrain,
+//     or improve Microsoft or OpenAI foundation models.
+//   • Data is NOT shared with OpenAI.
+//   • Data is processed only within the customer's Azure subscription/tenant.
+//   • Processing occurs within the selected Azure region.
+//   • Microsoft's enterprise DPA and GDPR commitments apply.
+//   Reference: https://learn.microsoft.com/en-us/legal/cognitive-services/openai/data-privacy
+//
+//   Public OpenAI API (api.openai.com):
+//   • By default, data may be used to improve models unless opted out.
+//   • No Azure-grade data residency or enterprise DPA guarantees.
+//
+// The URL structure below — /openai/deployments/<deployment>/chat/completions —
+// is the Azure-specific endpoint. Requests go to the customer's own Azure
+// resource, not shared public infrastructure.
 const callAzureChatCompletions = async ({ endpoint, deploymentName, apiVersion, apiKey }, body) => {
   const azureUrl = `${endpoint}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`;
 
