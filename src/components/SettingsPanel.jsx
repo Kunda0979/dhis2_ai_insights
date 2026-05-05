@@ -349,16 +349,6 @@ export const SettingsPanel = ({ onClose, engine }) => {
                     onChange={() => setAzureApiKeyMasked(!azureApiKeyMasked)}
                   />
                 </Box>
-                <div className="settings-field">
-                  <InputField
-                    label="Proxy URL (optional)"
-                    type="text"
-                    value={azureProxyUrl}
-                    onChange={({ value }) => setAzureProxyUrl(value)}
-                    placeholder="http://localhost:3000"
-                    helpText="URL of the running AI proxy. Leave blank to use the auto-detected default."
-                  />
-                </div>
                 <Box margin="16px 0">
                   <ButtonStrip>
                     <Button 
