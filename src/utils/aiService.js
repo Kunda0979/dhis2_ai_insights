@@ -74,9 +74,9 @@ export const getAIInfo = () => {
   } else if (aiProvider === 'azure-openai') {
     return {
       provider: 'azure-openai',
-      model: settings.azureDeploymentName || 'deployment-not-set',
-      resourceName: settings.azureResourceName || null,
-      apiVersion: settings.azureApiVersion || '2024-02-15-preview',
+      model: 'server-managed-deployment',
+      resourceName: null,
+      apiVersion: 'server-managed-version',
       maxTokens: settings.maxTokens || 2000
     }
   } else if (aiProvider === 'ollama') {

@@ -1,7 +1,7 @@
 {
-  "name": "ollama-proxy",
+  "name": "local-ai-proxy",
   "version": "1.0.0",
-  "description": "CORS proxy for Ollama API",
+  "description": "Local proxy for Ollama and Azure OpenAI",
   "main": "proxy.js",
   "scripts": {
     "start": "node proxy.js"

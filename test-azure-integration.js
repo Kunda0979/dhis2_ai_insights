@@ -61,20 +61,24 @@ try {
   const fs = require('fs')
   const settingsPanelContent = fs.readFileSync('./src/components/SettingsPanel.jsx', 'utf-8')
   
-  const hasAzureState = settingsPanelContent.includes('azureResourceName') && 
-                        settingsPanelContent.includes('azureDeploymentName')
   const hasAzureOption = settingsPanelContent.includes('azure-openai')
   const hasAzureConfig = settingsPanelContent.includes('Azure OpenAI Configuration')
   const hasAzureTestFunction = settingsPanelContent.includes('handleTestAzureOpenAIConnection')
+  const hasProxyNotice = settingsPanelContent.includes('short-lived session') &&
+                         settingsPanelContent.includes('/azure-openai/analyze')
+  const hasCredentialInputs = settingsPanelContent.includes('Azure Endpoint') &&
+                              settingsPanelContent.includes('Deployment Name') &&
+                              settingsPanelContent.includes('Azure API Key')
   
-  if (hasAzureState && hasAzureOption && hasAzureConfig && hasAzureTestFunction) {
-    console.log('  ✅ SettingsPanel.jsx correctly configured for Azure OpenAI')
+  if (hasAzureOption && hasAzureConfig && hasAzureTestFunction && hasProxyNotice && hasCredentialInputs) {
+    console.log('  ✅ SettingsPanel.jsx correctly configured for proxy-based Azure OpenAI')
   } else {
-    console.log('  ❌ Missing Azure configuration in SettingsPanel.jsx:')
-    console.log(`    - State variables: ${hasAzureState}`)
+    console.log('  ❌ Missing proxy-based Azure configuration in SettingsPanel.jsx:')
     console.log(`    - Provider option: ${hasAzureOption}`)
     console.log(`    - Azure config section: ${hasAzureConfig}`)
     console.log(`    - Test function: ${hasAzureTestFunction}`)
+    console.log(`    - Proxy notice: ${hasProxyNotice}`)
+    console.log(`    - Credential inputs: ${hasCredentialInputs}`)
   }
 } catch (error) {
   console.log(`  ❌ Error: ${error.message}`)
@@ -138,9 +142,6 @@ console.log('\nNext steps:')
 console.log('1. Deploy the app to a DHIS2 instance')
 console.log('2. Log in with your DHIS2 credentials')
 console.log('3. Go to Settings and select "Azure OpenAI" as AI Provider')
-console.log('4. Enter your Azure OpenAI credentials:')
-console.log('   - API Key')
-console.log('   - Resource Name')
-console.log('   - Deployment Name')
-console.log('5. Test the connection')
-console.log('6. Try analyzing data with Azure OpenAI\n')
+console.log('4. Enter Azure endpoint, deployment, API version, and API key in the Azure section')
+console.log('5. Click "Create Session and Test Connection"')
+console.log('6. Try analyzing data with Azure OpenAI through the proxy\n')

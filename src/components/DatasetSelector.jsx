@@ -156,6 +156,9 @@ export const DatasetSelector = ({
   onPeriodSelected, 
   onOrgUnitSelected 
 }) => {
+  const isTreeSelectableOrgUnit = (orgUnit) =>
+    Boolean(orgUnit && orgUnit.id && !orgUnit.isSpecial)
+
   // Data states
   const [dataElements, setDataElements] = useState([])
   const [indicators, setIndicators] = useState([])
@@ -1122,7 +1125,7 @@ export const DatasetSelector = ({
                           <OrganisationUnitTree
                             roots={rootOrgUnits}
                             onChange={handleOrgUnitChange}
-                            selected={selectedOrgUnit && selectedOrgUnit.id ? [selectedOrgUnit.id] : []}
+                            selected={isTreeSelectableOrgUnit(selectedOrgUnit) ? [selectedOrgUnit.id] : []}
                             singleSelection
                             initiallyExpanded={[]}
                           />

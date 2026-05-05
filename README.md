@@ -100,9 +100,10 @@ If you test through a forwarded URL (for example on GitHub Codespaces), DHIS2 se
 
 Use this flow for stable testing:
 1. Start the app with `npm start` (stable mode).
-2. Open the current forwarded URL from the Ports panel (port `8080`).
-3. Complete the development login prompt once.
-4. If the Codespace was asleep, run `npm start` again and reopen the current forwarded URL.
+2. Open the current forwarded URL from the Ports panel for port `3001`.
+3. Do not open port `8080` directly; that is the raw DHIS2 upstream proxy and will show unauthorized adapter errors.
+4. Complete the development login prompt once.
+5. If the Codespace was asleep, run `npm start` again and reopen the forwarded URL for port `3001`.
 
 The app now persists development auth locally and reuses it on subsequent refreshes.
 
@@ -113,7 +114,7 @@ In the project directory, you can run:
 ### `yarn start`
 
 Runs the app in the development mode.<br />
-Open [http://localhost:8080](http://localhost:8080) to view it in the browser.
+Open [http://localhost:3001](http://localhost:3001) to view it in the browser.
 
 ### `yarn test`
 
@@ -197,7 +198,7 @@ If you're using Ollama for local AI processing:
    npm install
    npm start
    ```
-   Then configure the app to use http://localhost:3001 as server URL
+   Then configure the app to use http://localhost:3000 as server URL
 
 ### Best Practices for AI Queries
 

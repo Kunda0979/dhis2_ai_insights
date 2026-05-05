@@ -32,12 +32,16 @@ export const SettingsPanel = ({ onClose, engine }) => {
   // AI Provider selection
   const [aiProvider, setAIProvider] = useState('openai')
 
-  // Azure credentials (stored in localStorage via saveAzureCredentials)
+  // Azure credentials — form fields for entry only; API key is never stored client-side.
+  // After saving, only the proxy session ID is persisted in DHIS2 userDataStore.
   const [azureEndpoint, setAzureEndpoint] = useState('')
   const [azureDeploymentName, setAzureDeploymentName] = useState('')
   const [azureApiVersion, setAzureApiVersion] = useState('2024-02-15-preview')
   const [azureApiKey, setAzureApiKey] = useState('')
   const [azureApiKeyMasked, setAzureApiKeyMasked] = useState(true)
+  const [azureProxyUrl, setAzureProxyUrl] = useState(
+    (process.env.REACT_APP_AZURE_PROXY_BASE_URL || '').trim()
+  )
   const [azureSessionActive, setAzureSessionActive] = useState(false)
   const [azureSessionExpiresAt, setAzureSessionExpiresAt] = useState(null)
 
@@ -74,13 +78,12 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setOllamaModel(settings.ollamaModel || 'llama3')
     }
 
-    // Pre-fill Azure credentials from DHIS2 userDataStore (or sessionStorage in dev)
-    loadAzureCredentials().then((azureCreds) => {
-      if (azureCreds) {
-        setAzureEndpoint(azureCreds.endpoint || '')
-        setAzureDeploymentName(azureCreds.deploymentName || '')
-        setAzureApiVersion(azureCreds.apiVersion || '2024-02-15-preview')
-        setAzureApiKey(azureCreds.apiKey || '')
+    // Restore Azure session: loads proxy session ID and validates with the proxy.
+    // Credentials (incl. API key) are NOT returned — they live only in proxy memory.
+    loadAzureCredentials().then((azureSession) => {
+      if (azureSession) {
+        // Session is active; form fields remain blank intentionally (API key not stored).
+        if (azureSession.proxyUrl) setAzureProxyUrl(azureSession.proxyUrl)
         setAzureSessionActive(true)
         setAzureSessionExpiresAt(getSessionExpiresAt())
       }
@@ -125,12 +128,14 @@ export const SettingsPanel = ({ onClose, engine }) => {
     setTestResult(null)
     
     try {
-      // Save (validate + persist to DHIS2 userDataStore) before testing
+      // POST credentials to proxy → proxy stores API key in memory, returns session ID.
+      // The session ID (not the API key) is then saved to DHIS2 userDataStore.
       await saveAzureCredentials({
         endpoint: azureEndpoint,
         deploymentName: azureDeploymentName,
         apiVersion: azureApiVersion,
         apiKey: azureApiKey,
+        proxyUrl: azureProxyUrl || undefined,
       })
 
       // Test uses the in-memory cache just populated by saveAzureCredentials
@@ -166,7 +171,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
       setAzureApiKey('')
       setTestResult({
         success: true,
-        message: 'Azure credentials cleared from DHIS2 user data store.'
+        message: 'Azure session cleared. The proxy session has been invalidated.'
       })
     } catch (error) {
       setTestResult({
@@ -291,8 +296,8 @@ export const SettingsPanel = ({ onClose, engine }) => {
             <>
               <h3>Azure OpenAI Configuration</h3>
               <p>
-                Credentials are stored in your browser&apos;s localStorage and used to call Azure OpenAI
-                directly — no proxy server is required.
+                Credentials are sent to the <strong>AI proxy server</strong> and held only in proxy memory.
+                The browser never stores or transmits your API key directly to Azure.
               </p>
 
               <div className="settings-field">
@@ -335,7 +340,7 @@ export const SettingsPanel = ({ onClose, engine }) => {
                   value={azureApiKey}
                   onChange={({ value }) => setAzureApiKey(value)}
                   placeholder="azure-api-key"
-                  helpText="Stored in localStorage and sent directly to Azure. Never transmitted to any third-party proxy."
+                  helpText="Sent once to the proxy to create a session. Never stored in the browser or DHIS2 database."
                 />
                 <Box margin="8px 0">
                   <Switch
@@ -344,6 +349,16 @@ export const SettingsPanel = ({ onClose, engine }) => {
                     onChange={() => setAzureApiKeyMasked(!azureApiKeyMasked)}
                   />
                 </Box>
+                <div className="settings-field">
+                  <InputField
+                    label="Proxy URL (optional)"
+                    type="text"
+                    value={azureProxyUrl}
+                    onChange={({ value }) => setAzureProxyUrl(value)}
+                    placeholder="http://localhost:3000"
+                    helpText="URL of the running AI proxy. Leave blank to use the auto-detected default."
+                  />
+                </div>
                 <Box margin="16px 0">
                   <ButtonStrip>
                     <Button 
@@ -353,15 +368,16 @@ export const SettingsPanel = ({ onClose, engine }) => {
                       {testingConnection ? 'Testing...' : 'Save & Test Azure Connection'}
                     </Button>
                     <Button onClick={handleClearAzureSession} disabled={testingConnection}>
-                      Clear Azure Credentials
+                      Clear Azure Session
                     </Button>
                   </ButtonStrip>
                 </Box>
               </div>
-              
-              <NoticeBox title="Direct browser-to-Azure calls" success>
-                Analysis requests are sent directly from your browser to Azure OpenAI — no intermediary proxy
-                server is needed.
+
+              <NoticeBox title="Secured via proxy — API key never leaves your server" success>
+                All Azure OpenAI requests are forwarded by the AI proxy. The browser sends only a
+                session token; your API key is held exclusively in proxy memory and is never written
+                to any browser storage or database.
               </NoticeBox>
 
               {azureSessionActive && azureSessionExpiresAt && (
@@ -373,11 +389,10 @@ export const SettingsPanel = ({ onClose, engine }) => {
                 </NoticeBox>
               )}
 
-              <NoticeBox title="Secure server-side storage" info>
-                Credentials (including the API key) are saved in the <strong>DHIS2 User Data Store</strong> —
-                stored in the DHIS2 database, protected by your DHIS2 session, and never written to
-                localStorage or any third-party server. In dev mode a tab-scoped sessionStorage fallback is
-                used instead.
+              <NoticeBox title="Secure server-side session reference" info>
+                Only the <strong>proxy session ID</strong> is saved in the <strong>DHIS2 User Data Store</strong>
+                — no API keys, no credentials. The session ID is useless without the running proxy.
+                In dev mode a tab-scoped sessionStorage fallback is used instead.
               </NoticeBox>
             </>
           ) : (

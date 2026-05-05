@@ -1,19 +1,27 @@
 import { getSettings } from './storage'
+import { getProxyBaseUrl } from './proxyConfig'
 
-// ── Credential storage ────────────────────────────────────────────────────
-// When deployed inside DHIS2: credentials are stored in the DHIS2 User Data
-// Store (/api/userDataStore). Access requires a valid DHIS2 session — the API
-// key never touches localStorage and is protected by DHIS2 authentication.
+// ── Security model ────────────────────────────────────────────────────────
+// ALL Azure OpenAI calls go through the local AI proxy (ollama-proxy/proxy.js).
+// The frontend NEVER holds an API key or calls Azure OpenAI directly.
 //
-// In dev mode (localhost / github.dev): sessionStorage is used as a fallback.
-// sessionStorage is cleared when the tab closes, limiting exposure.
+// Session flow:
+//  1. User enters credentials in Settings → frontend POSTs to proxy
+//  2. Proxy validates, stores credentials in memory, returns a session ID
+//  3. Frontend stores ONLY the session ID + proxy URL (no secrets)
+//  4. All AI queries carry X-Azure-Session-Id; proxy looks up credentials
+//     and forwards to Azure
+//  5. Session expires after 30 minutes of inactivity (idle timer resets on
+//     every query)
 //
-// An in-memory cache (`credentialCache`) is maintained for the current page
-// session so AI query calls don't need to hit the server each time.
+// Storage — no secrets at rest:
+//  Deployed (DHIS2): /api/userDataStore/dhis2-ai-insights/azure-session
+//  Dev mode:         sessionStorage (tab-scoped, cleared on close)
+//  In-memory cache:  sessionCache   (synchronous, no I/O needed)
 
-let credentialCache = null
+let sessionCache = null   // { sessionId: string, proxyUrl: string } — no secrets
 let expireTimer = null
-let idleExpiresAt = null // in-memory only — not persisted
+let idleExpiresAt = null  // in-memory only — not persisted
 
 const SESSION_IDLE_MS = 30 * 60 * 1000 // 30 minutes of inactivity
 
@@ -30,6 +38,7 @@ const isDevMode = () => {
 }
 
 // ── Dev fallback: sessionStorage ──────────────────────────────────────────
+// Tab-scoped — cleared automatically when the tab/browser closes.
 
 const DEV_SESSION_KEY = 'dhis2-ai-insights-azure-session'
 
@@ -47,11 +56,12 @@ const devClear = () => {
 }
 
 // ── DHIS2 User Data Store (deployed) ─────────────────────────────────────
+// Stores ONLY { sessionId, proxyUrl } — zero secrets at rest.
 // The app is installed at .../api/apps/AI-Insights/index.html so
 // ../../../api resolves to the DHIS2 root API on the same origin.
 
 const DS_NAMESPACE = 'dhis2-ai-insights'
-const DS_KEY = 'azure-creds'
+const DS_KEY = 'azure-session'  // session ID only — not raw credentials
 const dsUrl = () => `../../../api/userDataStore/${DS_NAMESPACE}/${DS_KEY}`
 
 const dsGet = async () => {
@@ -61,20 +71,20 @@ const dsGet = async () => {
   return resp.json()
 }
 
-const dsSave = async (creds) => {
-  // PUT updates an existing key; fall back to POST if key does not yet exist
+const dsSave = async (data) => {
+  // PUT updates an existing key; fall back to POST on first save
   let resp = await fetch(dsUrl(), {
     method: 'PUT',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(creds),
+    body: JSON.stringify(data),
   })
   if (resp.status === 404) {
     resp = await fetch(dsUrl(), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(creds),
+      body: JSON.stringify(data),
     })
   }
   if (!resp.ok) {
@@ -90,9 +100,16 @@ const dsClear = async () => {
   }
 }
 
-// ── Idle session timer ───────────────────────────────────────────────────
-// The timer resets on every AI query. Credentials are only wiped if the app
-// sits idle (no queries sent) for 30 minutes.
+// Migration: remove old 'azure-creds' key that stored raw API keys (best-effort)
+const dsClearLegacyCreds = () => {
+  fetch(`../../../api/userDataStore/${DS_NAMESPACE}/azure-creds`, {
+    method: 'DELETE',
+    credentials: 'include',
+  }).catch(() => {})
+}
+
+// ── Idle session timer ────────────────────────────────────────────────────
+// Resets on every AI query. Session cleared only after 30 min of inactivity.
 
 const resetIdleTimer = () => {
   if (expireTimer) clearTimeout(expireTimer)
@@ -100,8 +117,17 @@ const resetIdleTimer = () => {
   expireTimer = setTimeout(async () => {
     expireTimer = null
     idleExpiresAt = null
-    credentialCache = null
-    // Best-effort wipe from storage
+    const session = sessionCache
+    sessionCache = null
+    // Notify the proxy to invalidate the server-side session
+    if (session?.sessionId) {
+      const proxyUrl = session.proxyUrl || getProxyBaseUrl()
+      fetch(`${proxyUrl}/azure-openai/session`, {
+        method: 'DELETE',
+        headers: { 'X-Azure-Session-Id': session.sessionId },
+      }).catch(() => {})
+    }
+    // Best-effort wipe of local session reference
     try {
       if (isDevMode()) devClear(); else await dsClear()
     } catch (_) {}
@@ -109,157 +135,171 @@ const resetIdleTimer = () => {
   }, SESSION_IDLE_MS)
 }
 
-/** Returns the ISO timestamp when the idle session will expire, or null. */
+/** Returns the ISO timestamp when the idle session will next expire, or null. */
 export const getSessionExpiresAt = () => idleExpiresAt
 
 // ── Public credential API ─────────────────────────────────────────────────
 
 /**
- * Load credentials from server (DHIS2 userDataStore or sessionStorage in dev).
+ * Load the Azure session reference from storage and validate it with the proxy.
  * Call once at app startup to warm the in-memory cache.
  */
 export const loadAzureCredentials = async () => {
   try {
     const stored = isDevMode() ? devGet() : await dsGet()
-    if (!stored) {
-      credentialCache = null
+
+    // Migration guard: old format stored raw API key — clear it and require re-entry
+    if (stored && (stored.apiKey || stored.endpoint)) {
+      console.warn('[Azure] Clearing legacy credentials that contained secrets.')
+      isDevMode() ? devClear() : dsClearLegacyCreds()
+      if (!isDevMode()) await dsClear().catch(() => {})
       return null
     }
-    credentialCache = stored
-    // Start a fresh idle window — user just opened the app
+
+    if (!stored?.sessionId) {
+      sessionCache = null
+      return null
+    }
+
+    const proxyUrl = stored.proxyUrl || getProxyBaseUrl()
+
+    // Validate the session is still alive on the proxy
+    const testResp = await fetch(`${proxyUrl}/azure-openai/test`, {
+      headers: { 'X-Azure-Session-Id': stored.sessionId },
+    })
+
+    if (!testResp.ok) {
+      // Session expired or proxy unavailable — clear the stale reference
+      isDevMode() ? devClear() : await dsClear().catch(() => {})
+      sessionCache = null
+      return null
+    }
+
+    sessionCache = { sessionId: stored.sessionId, proxyUrl }
     resetIdleTimer()
-    return stored
+    return sessionCache
   } catch (e) {
-    console.error('[Azure] Failed to load credentials:', e.message)
-    credentialCache = null
+    console.error('[Azure] Failed to load session:', e.message)
+    sessionCache = null
     return null
   }
 }
 
 /**
- * Validate, persist, and cache credentials.
- * Throws if validation fails or the server write fails.
+ * Create a proxy session from the supplied credentials, then persist only
+ * the session ID. The API key is NEVER stored locally — the proxy holds it.
+ *
+ * @param {Object} creds - { endpoint, deploymentName, apiVersion, apiKey, proxyUrl? }
+ * @throws if the proxy is unreachable or rejects the credentials.
  */
 export const saveAzureCredentials = async (creds) => {
-  const validated = validateCredentials(creds)
-  // Do not store an expiresAt — expiry is idle-based and tracked in memory only
-  credentialCache = validated
+  const proxyUrl = ((creds.proxyUrl || '').trim() || getProxyBaseUrl()).replace(/\/$/, '')
+
+  const resp = await fetch(`${proxyUrl}/azure-openai/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      endpoint:       (creds.endpoint || '').trim(),
+      deploymentName: (creds.deploymentName || '').trim(),
+      apiVersion:     (creds.apiVersion || '2024-02-15-preview').trim(),
+      apiKey:         (creds.apiKey || '').trim(),
+    }),
+  })
+
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}))
+    throw new Error(
+      body?.error?.message ||
+      `Proxy session creation failed (HTTP ${resp.status}). Is the proxy running at ${proxyUrl}?`
+    )
+  }
+
+  const { azureSessionId } = await resp.json()
+  if (!azureSessionId) throw new Error('Proxy did not return a session ID.')
+
+  const sessionData = { sessionId: azureSessionId, proxyUrl }
+  sessionCache = sessionData
   resetIdleTimer()
+
   if (isDevMode()) {
-    devSave(validated)
+    devSave(sessionData)
   } else {
-    await dsSave(validated)
+    await dsSave(sessionData)
+    dsClearLegacyCreds()  // remove any old key-bearing entry
   }
 }
 
 /**
- * Wipe credentials from cache and storage.
+ * Notify the proxy to invalidate the session and remove the local reference.
  */
 export const clearAzureCredentials = async () => {
   if (expireTimer) { clearTimeout(expireTimer); expireTimer = null }
-  credentialCache = null
+  const session = sessionCache
+  sessionCache = null
   idleExpiresAt = null
+
+  // Ask the proxy to destroy the server-side session (best-effort)
+  if (session?.sessionId) {
+    const proxyUrl = session.proxyUrl || getProxyBaseUrl()
+    fetch(`${proxyUrl}/azure-openai/session`, {
+      method: 'DELETE',
+      headers: { 'X-Azure-Session-Id': session.sessionId },
+    }).catch(() => {})
+  }
+
   if (isDevMode()) {
     devClear()
   } else {
-    await dsClear()
+    await dsClear().catch(() => {})
   }
 }
 
-/** Returns the in-memory cached credentials (sync, no I/O). */
-export const getAzureCredentials = () => credentialCache
+/** Returns the in-memory session reference (sync, no I/O, no secrets). */
+export const getAzureCredentials = () => sessionCache
 
-// ── Validation ────────────────────────────────────────────────────────────
+// ── Session status ────────────────────────────────────────────────────────
 
-const normalizeEndpoint = (value) => {
-  const raw = (value || '').trim().replace(/\/$/, '')
-  try {
-    const parsed = new URL(raw)
-    if (!['https:', 'http:'].includes(parsed.protocol)) return null
-    return parsed.origin
-  } catch (_) { return null }
-}
-
-const validateCredentials = (input = {}) => {
-  const endpoint = normalizeEndpoint(input.endpoint)
-  const deploymentName = (input.deploymentName || '').trim()
-  const apiVersion = (input.apiVersion || '2024-02-15-preview').trim()
-  const apiKey = (input.apiKey || '').trim()
-  if (!endpoint || !deploymentName || !apiVersion || !apiKey) {
-    throw new Error('Azure endpoint, deployment name, API version, and API key are all required.')
-  }
-  return { endpoint, deploymentName, apiVersion, apiKey }
-}
-
-// ── Error formatting ──────────────────────────────────────────────────────
-
-const toAzureErrorMessage = (error) => {
-  const status = error?.status || error?.response?.status
-  const apiMessage = error?.response?.data?.error?.message || error?.response?.data?.message
-
-  if (apiMessage) return apiMessage
-
-  if (error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError') || error?.code === 'ERR_NETWORK') {
-    return 'Network/CORS error reaching Azure OpenAI. Check your endpoint URL and that your Azure resource is accessible from this browser.'
-  }
-
-  if (status === 401) {
-    return 'Azure API key is invalid or expired. Re-enter your credentials in Settings.'
-  }
-
-  if (status === 403) {
-    return 'Access denied. Check your Azure API key permissions.'
-  }
-
-  if (status === 404) {
-    return 'Azure deployment not found. Check the endpoint URL and deployment name.'
-  }
-
-  if (status === 413) {
-    return 'Request too large. Narrow period, org unit, or indicators.'
-  }
-
-  if (status === 429) {
-    return 'Too many Azure requests in a short period. Please wait and try again.'
-  }
-
-  return error?.message || 'Failed to communicate with Azure OpenAI. Check your configuration in Settings.'
-}
-
-// ── Direct Azure call helper ───────────────────────────────────────────────
-
-const callAzure = async (creds, body) => {
-  const { endpoint, deploymentName, apiVersion, apiKey } = creds
-  const url = `${endpoint}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
-  return fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'api-key': apiKey,
-    },
-    body: JSON.stringify(body),
-  })
-}
-
-// ── Public session API ────────────────────────────────────────────────────
-
-export const hasAzureSession = () => {
-  if (!credentialCache) return false
-  if (credentialCache.expiresAt && new Date(credentialCache.expiresAt).getTime() <= Date.now()) return false
-  return true
-}
+export const hasAzureSession = () => Boolean(sessionCache?.sessionId)
 
 export const initializeAzureSession = async (credentials) => {
   await saveAzureCredentials(credentials)
-  return { azureSessionId: 'browser-direct', expiresAt: null }
+  return { azureSessionId: sessionCache?.sessionId || null, expiresAt: null }
 }
 
 export const clearAzureSession = async () => {
   await clearAzureCredentials()
 }
 
+// ── Error formatting ──────────────────────────────────────────────────────
+
+const toProxyErrorMessage = (error, status) => {
+  if (
+    error?.message?.includes('Failed to fetch') ||
+    error?.message?.includes('NetworkError') ||
+    error?.code === 'ERR_NETWORK'
+  ) {
+    return 'Cannot reach the AI proxy server. Ensure the proxy is running and the Proxy URL in Settings is correct.'
+  }
+  if (status === 401 || status === 403) {
+    return 'Azure session expired or access denied. Re-enter your credentials in Settings.'
+  }
+  if (status === 413) {
+    return 'Request too large. Narrow the period, org unit, or indicators.'
+  }
+  if (status === 429) {
+    return 'Too many requests. Please wait before sending more queries.'
+  }
+  if (status === 503) {
+    return 'Azure AI is currently disabled by your administrator.'
+  }
+  if (status === 504) {
+    return 'Azure OpenAI request timed out. Try a shorter query or check your Azure service status.'
+  }
+  return error?.message || 'Failed to communicate with the AI proxy. Check your proxy configuration.'
+}
+
 /**
- * Send a query to Azure OpenAI API
+ * Send a query to Azure OpenAI via the proxy.
  * @param {string} query - The user's query
  * @param {Object} data - The DHIS2 data to analyze
  * @param {Object} context - Additional context information
@@ -268,18 +308,14 @@ export const clearAzureSession = async () => {
  * @returns {Object} The AI response
  */
 export const sendToAzureOpenAI = async (query, data, context, conversation = [], onStreamChunk = null) => {
-  // Reset the idle timer — this counts as activity
+  // Reset idle timer — this counts as activity
   if (hasAzureSession()) resetIdleTimer()
 
   if (!hasAzureSession()) {
-    throw new Error(
-      credentialCache?.expiresAt
-        ? 'Azure session has expired (30 minutes). Re-enter your credentials in Settings.'
-        : 'Azure credentials not configured. Configure Azure OpenAI in Settings first.'
-    )
+    throw new Error('Azure credentials not configured. Configure Azure OpenAI in Settings first.')
   }
-  const creds = credentialCache
 
+  const { sessionId, proxyUrl } = sessionCache
   const settings = getSettings() || {}
   const maxTokens = settings.maxTokens || 2000
   const temperature = settings.temperature || 0.7
@@ -290,13 +326,25 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
   messages.push({ role: 'user', content: query })
 
   try {
-    const resp = await callAzure(creds, { messages, max_tokens: maxTokens, temperature, n: 1 })
+    const resp = await fetch(`${proxyUrl}/azure-openai/analyze`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Azure-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ messages, max_tokens: maxTokens, temperature, n: 1 }),
+    })
 
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}))
-      const msg = body?.error?.message || `Azure returned HTTP ${resp.status}`
+      const msg = body?.error?.message || `Proxy returned HTTP ${resp.status}`
       if (msg.includes('maximum context length')) {
         throw new Error('Too much conversation history. Please click "Clear Chat" to start fresh and try your question again.')
+      }
+      // If the proxy says the session is gone, clear local state too
+      if (resp.status === 401 || resp.status === 403) {
+        sessionCache = null
+        idleExpiresAt = null
       }
       throw Object.assign(new Error(msg), { status: resp.status })
     }
@@ -314,46 +362,46 @@ export const sendToAzureOpenAI = async (query, data, context, conversation = [],
     }
   } catch (error) {
     if (error.message.includes('Clear Chat')) throw error
-    throw new Error(toAzureErrorMessage(error))
+    throw new Error(toProxyErrorMessage(error, error.status))
   }
 }
 
 /**
- * Test the Azure OpenAI API connection
- * @param {Object} options - Connection options
+ * Test the Azure OpenAI connection via the proxy.
+ * @param {Object} _options - Unused (kept for interface compatibility)
  * @returns {Object} Test result
  */
 export const testAzureOpenAIConnection = async (_options) => {
-  // Credentials must already be saved (via saveAzureCredentials) before calling this.
-  // Counts as activity — reset the idle timer.
-  if (credentialCache) resetIdleTimer()
-  const creds = credentialCache
-  if (!creds) {
+  if (!hasAzureSession()) {
     throw new Error('Azure credentials not configured. Enter credentials in Settings first.')
   }
 
+  // Counts as activity — reset idle timer
+  if (sessionCache) resetIdleTimer()
+
+  const { sessionId, proxyUrl } = sessionCache
+
   try {
-    const resp = await callAzure(creds, {
-      messages: [{ role: 'user', content: 'Connection test' }],
-      max_tokens: 10,
-      temperature: 0,
+    const resp = await fetch(`${proxyUrl}/azure-openai/test`, {
+      headers: { 'X-Azure-Session-Id': sessionId },
     })
 
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}))
       throw Object.assign(
-        new Error(body?.error?.message || `HTTP ${resp.status}`),
+        new Error(body?.message || body?.error?.message || `Proxy test failed: HTTP ${resp.status}`),
         { status: resp.status }
       )
     }
 
+    const data = await resp.json()
     return {
       success: true,
-      message: 'Successfully connected to Azure OpenAI.',
+      message: data.message || 'Successfully connected to Azure OpenAI.',
       expiresAt: null,
     }
   } catch (error) {
-    throw new Error(toAzureErrorMessage(error))
+    throw new Error(toProxyErrorMessage(error, error.status))
   }
 }
 

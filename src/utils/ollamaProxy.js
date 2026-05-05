@@ -64,7 +64,7 @@ const ollamaRequest = async (serverUrl, endpoint, options = {}) => {
           `2. Navigate to the 'ollama-proxy' folder in the app directory\n` +
           `3. Run 'npm install' (first time only)\n` +
           `4. Run 'npm start' to start the proxy\n` +
-          `5. Use http://localhost:3001 as your Ollama server URL`
+          `5. Use http://localhost:3000 as your Ollama server URL`
         )
       } else {
         throw new Error(
